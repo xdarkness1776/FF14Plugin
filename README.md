@@ -1,45 +1,49 @@
 # FF14Plugin: Character Mod Exporter
 
-A Dalamud plugin for FINAL FANTASY XIV. Right-click another player that PlayerSync is syncing (through ZoneSync,
-a syncshell or a direct pair) and choose **Export Character Mods**. The exporter asks PlayerSync for the
-character's live, already-resolved resource mapping, waits until PlayerSync has finished synchronizing that
-character, and copies those files from PlayerSync's cache into a folder you choose, together with
-`Manifest.json`, `README.txt` and, when the mapping is complete, a Penumbra mod package (`.pmp`) for manual import.
+A Dalamud add-on for PlayerSync in FINAL FANTASY XIV. Right-click another player that PlayerSync is syncing (through
+ZoneSync, a syncshell or a direct pair) and choose **Export Character Mods**. The exporter asks Penumbra which files
+PlayerSync applied to that character, keeps the ones from PlayerSync's cache (or your own Penumbra mod folder), waits
+until loading has settled, and copies them into a folder you choose, together with `Manifest.json`, `README.txt` and,
+when the set is complete, a Penumbra mod package (`.pmp`) for manual import.
 
-**It requires a patched PlayerSync build.** Stock PlayerSync has no IPC that exposes a character's resolved files
-or sync state (see [docs/PLAYERSYNC_AUDIT.md](docs/PLAYERSYNC_AUDIT.md)). [playersync-fork/](playersync-fork/)
-contains a small, versioned export IPC patch for PlayerSync 1.15.5.9. The patched build is unofficial and not
-endorsed by the PlayerSync team.
+**Works with the official PlayerSync.** Nothing in PlayerSync is replaced or changed. Stock PlayerSync has no IPC
+for a character's files (see [docs/PLAYERSYNC_AUDIT.md](docs/PLAYERSYNC_AUDIT.md)), but it applies them through a
+Penumbra temporary collection, and Penumbra reports which local file stands behind each game path the character
+loads. The limit: only files the game has loaded are listed, so animations, VFX and sounds appear once they have
+played, and "finished" means no new files appeared for a few seconds.
 
-What it does not do: it never downloads anything itself, never pairs with anyone, never scans other characters,
-never writes to PlayerSync's cache or settings, and never installs or enables mods. Missing files are only ever
-fetched by PlayerSync's own pipeline when you press **Scan Character Resources**.
+What it does not do: it never downloads anything, never pairs with anyone, never scans the whole cache, never writes
+to PlayerSync's cache or settings, and never installs or enables mods.
+
+[playersync-fork/](playersync-fork/) keeps an optional PlayerSync patch with a versioned export IPC (complete mapping,
+real sync state). If a PlayerSync build with it is loaded, the exporter uses it automatically. It is unofficial,
+not endorsed by the PlayerSync team, and not required.
 
 ## Status
 
 | Area | State |
 | --- | --- |
 | Exporter plugin, Release build, DalamudPackager zip (API 15) | builds |
-| Patched PlayerSync (Release) | builds from `playersync-fork/apply.sh` |
-| Automated tests (76) | pass: path safety, verified copying, cache preservation, mapping, waiting for sync, cancellation, folders, manifest, `.pmp` validated with Penumbra's own path parser |
-| In-game behaviour | **not tested yet** (no game client in the development environment); see [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md) |
+| Automated tests | pass: path safety, verified copying, cache preservation, Penumbra source (path handling, settling, filtering), waiting, cancellation, folders, manifest, `.pmp` validated with Penumbra's own path parser |
+| Optional patched PlayerSync (Release) | builds from `playersync-fork/apply.sh` |
+| In-game behaviour | version 0.1 loaded in game and opened the export window from the context menu; the Penumbra source (0.2) is **not tested in game yet**; see [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md) |
 | `.pmp` import into Penumbra | structure validated, real import not tested yet |
 
 ## Docs
 
 * [docs/INSTALL.md](docs/INSTALL.md): install, usage and output layout
 * [docs/PLAYERSYNC_AUDIT.md](docs/PLAYERSYNC_AUDIT.md): how PlayerSync's ZoneSync pipeline works and why the IPC is needed
-* [playersync-fork/README.md](playersync-fork/README.md): the patch, the IPC contract, rebuilding for new PlayerSync versions
+* [playersync-fork/README.md](playersync-fork/README.md): the optional patch, the IPC contract, rebuilding for new PlayerSync versions
 * [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md): in-game acceptance tests
 
 ## Layout
 
 ```
 src/CharacterModExporter/        Dalamud plugin: context menu, export window, settings
-src/CharacterModExporter.Core/   game-independent logic: folders, inventory, export flow, manifest, .pmp builder
-src/PlayerSyncExport.Contracts/  IPC names and DTOs, path rules, verified copier, job runner (also compiled into the patched PlayerSync)
+src/CharacterModExporter.Core/   game-independent logic: Penumbra resource tracking, folders, inventory, export flow, manifest, .pmp builder
+src/PlayerSyncExport.Contracts/  DTOs, path rules, verified copier, job runner (also compiled into the optional patched PlayerSync)
 tests/                           xUnit tests (+ Penumbra path compatibility tests)
-playersync-fork/                 pinned upstream revision, patch, apply script
+playersync-fork/                 optional: pinned upstream revision, export IPC patch, apply script
 tools/                           package and repo.json checks used by CI
 ```
 

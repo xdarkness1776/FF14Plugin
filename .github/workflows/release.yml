@@ -58,7 +58,8 @@ jobs:
           python3 tools/check_package.py dist/CharacterModExporter.zip CharacterModExporter "${{ steps.version.outputs.version }}"
 
       - name: Build patched PlayerSync
-        if: vars.PUBLISH_PATCHED_PLAYERSYNC != 'false'
+        # Optional since 0.2: the exporter works with stock PlayerSync. Set the variable to 'true' to attach the build.
+        if: vars.PUBLISH_PATCHED_PLAYERSYNC == 'true'
         run: |
           playersync-fork/apply.sh build/PlayerSync
           dotnet build build/PlayerSync/PlayerSync/PlayerSync.csproj -c Release -p:EnableWindowsTargeting=true

@@ -8,8 +8,8 @@ using PlayerSyncExport.Contracts;
 namespace CharacterModExporter.Services;
 
 /// <summary>
-/// Talks to PlayerSync over Dalamud IPC: the export gates added by the patched build, plus the
-/// existing <c>PlayerSync.GetHandledAddresses</c> gate that stock PlayerSync already provides.
+/// Talks to PlayerSync over Dalamud IPC: the optional export gates of a PlayerSync build with the export IPC, plus
+/// the <c>PlayerSync.GetHandledAddresses</c> gate that stock PlayerSync already provides.
 /// </summary>
 public sealed class PlayerSyncIpcClient : IPlayerSyncExportApi
 {
@@ -33,6 +33,9 @@ public sealed class PlayerSyncIpcClient : IPlayerSyncExportApi
         _cancelExport = pi.GetIpcSubscriber<string, bool>(ExportIpc.CancelExport);
         _handledAddresses = pi.GetIpcSubscriber<List<nint>>("PlayerSync.GetHandledAddresses");
     }
+
+    public string SourceLabel => "PlayerSync export IPC v" + ExportIpc.ApiVersion;
+    public string UnavailableMessage => "No PlayerSync build with the export IPC is loaded.";
 
     public (ProviderStatus Status, int Version) Probe()
     {

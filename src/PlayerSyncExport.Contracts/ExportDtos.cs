@@ -71,6 +71,13 @@ public sealed class CharacterStateDto
     public bool SharesZoneSyncGroup { get; set; }
 
     public bool ZoneSyncEnabled { get; set; }
+
+    /// <summary>
+    /// False when the source cannot tell how the character is linked (direct pair, syncshell or ZoneSync), so the
+    /// link and ZoneSync fields above carry no information. Stock PlayerSync only reports that it handles a character.
+    /// </summary>
+    public bool LinkDetailsKnown { get; set; } = true;
+
     public SyncState SyncState { get; set; }
     public string? ReceivedDataHash { get; set; }
     public string? AppliedDataHash { get; set; }

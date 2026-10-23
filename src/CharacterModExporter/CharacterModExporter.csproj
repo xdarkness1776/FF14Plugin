@@ -7,12 +7,16 @@
     <Author>xdarkness1776</Author>
     <Name>Character Mod Exporter</Name>
     <Punchline>Export the mod files PlayerSync applied to another character into a folder you choose.</Punchline>
-    <Description>Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose "Export Character Mods". The exporter waits for PlayerSync to finish synchronizing, then copies that character's resolved files from PlayerSync's cache into a folder you choose, with a manifest, a report and, when the mapping is complete, a Penumbra mod package for manual import.
+    <Description>An add-on for PlayerSync. Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose "Export Character Mods". The exporter reads from Penumbra which of PlayerSync's cached files are applied to that character, and copies them into a folder you choose, with a manifest, a report and, when the set is complete, a Penumbra mod package for manual import.
 
-Requires a PlayerSync build with the export IPC (see the project README). It does not work with stock PlayerSync.</Description>
+Works with the official PlayerSync and Penumbra. It never downloads anything and never changes PlayerSync.</Description>
     <RepoUrl>https://github.com/xdarkness1776/FF14Plugin</RepoUrl>
     <Tags>playersync;penumbra;export;mods</Tags>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Penumbra.Api" Version="5.15.1" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CharacterModExporter.Core\CharacterModExporter.Core.csproj" />

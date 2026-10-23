@@ -1,8 +1,9 @@
 # PlayerSync with export IPC
 
-Character Mod Exporter needs a PlayerSync build that carries `patches/0001-export-ipc.patch`. **Stock PlayerSync
-does not work with the exporter.** This is an unofficial, personal-use build; it is not endorsed by the PlayerSync
-team. PlayerSync is MIT licensed (Copyright (c) 2022 Penumbra-Sync); the license is kept in the checkout.
+**Optional.** Since 0.2 Character Mod Exporter works with the official PlayerSync by reading the applied files from
+Penumbra. A PlayerSync build that carries `patches/0001-export-ipc.patch` gives the exporter the complete applied
+mapping (including files the game has not loaded yet) and the real sync state; when one is loaded the exporter uses it
+automatically. This is an unofficial, personal-use build; it is not endorsed by the PlayerSync team. PlayerSync is MIT licensed (Copyright (c) 2022 Penumbra-Sync); the license is kept in the checkout.
 
 ## What the patch changes
 
@@ -57,5 +58,5 @@ keeps your PlayerSync settings and cache. See `docs/INSTALL.md`.
    (add new files with `git add -N` first).
 3. CI builds the patched PlayerSync on every push.
 
-An official PlayerSync update installed by Dalamud overwrites the patched build; the exporter then shows
-"export IPC not available" until you install the patched build for that version.
+If the patched build is not loaded (for example after an official PlayerSync update), the exporter falls back to
+reading through Penumbra.

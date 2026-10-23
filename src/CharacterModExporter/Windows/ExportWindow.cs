@@ -55,16 +55,17 @@ public sealed class ExportWindow : Window, IDisposable
 
         var provider = s.Provider switch
         {
-            ProviderStatus.Available => ("PlayerSync export IPC v" + s.ProviderVersion, ImGuiColors.HealerGreen),
+            ProviderStatus.Available => (s.SourceLabel, ImGuiColors.HealerGreen),
             ProviderStatus.IncompatibleVersion => ($"PlayerSync export IPC v{s.ProviderVersion} (incompatible, need v{ExportIpc.ApiVersion})", ImGuiColors.DalamudRed),
-            _ => ("PlayerSync export IPC not available (stock PlayerSync or not loaded)", ImGuiColors.DalamudRed),
+            _ => (s.UnavailableMessage, ImGuiColors.DalamudRed),
         };
-        ImGui.TextColored(provider.Item2, "PlayerSync: " + provider.Item1);
+        ImGui.TextColored(provider.Item2, "Source: " + provider.Item1);
 
         if (state != null)
         {
             var link = state.Lookup switch
             {
+                CharacterLookup.Found when !state.LinkDetailsKnown => "synced by PlayerSync (pair, syncshell or ZoneSync)",
                 CharacterLookup.Found when state.IsZoneSyncOnly => "ZoneSync",
                 CharacterLookup.Found when state.IsDirectlyPaired => "direct pair",
                 CharacterLookup.Found when state.SharesZoneSyncGroup => "syncshell + ZoneSync",
@@ -73,7 +74,9 @@ public sealed class ExportWindow : Window, IDisposable
                 CharacterLookup.Paused => "paused in PlayerSync",
                 _ => "not synced by PlayerSync in this area",
             };
-            ImGui.TextUnformatted($"Sync link: {link}    ZoneSync enabled: {(state.ZoneSyncEnabled ? "yes" : "no")}");
+            ImGui.TextUnformatted(state.LinkDetailsKnown
+                ? $"Sync link: {link}    ZoneSync enabled: {(state.ZoneSyncEnabled ? "yes" : "no")}"
+                : $"Sync link: {link}");
             var syncColor = state.SyncState switch
             {
                 SyncState.Complete => ImGuiColors.HealerGreen,
@@ -81,7 +84,7 @@ public sealed class ExportWindow : Window, IDisposable
                 SyncState.InProgress => ImGuiColors.DalamudOrange,
                 _ => ImGuiColors.DalamudRed,
             };
-            ImGui.TextColored(syncColor, "Synchronization: " + DescribeSync(state.SyncState));
+            ImGui.TextColored(syncColor, "Synchronization: " + (state.LinkDetailsKnown ? DescribeSync(state.SyncState) : DescribeLoaded(state.SyncState)));
             foreach (var note in state.Notes) ImGui.TextColored(ImGuiColors.DalamudGrey, note);
         }
 
@@ -117,6 +120,15 @@ public sealed class ExportWindow : Window, IDisposable
         _ => "no character data received yet",
     };
 
+    // Stock PlayerSync does not report sync progress; the Penumbra source can only see whether loading has settled.
+    private static string DescribeLoaded(SyncState state) => state switch
+    {
+        SyncState.Complete => "loaded, no new files for a few seconds",
+        SyncState.CompleteWithMissing => "loaded, but some files could not be read",
+        SyncState.InProgress => "still loading (new files appeared in the last few seconds)",
+        _ => "no PlayerSync files loaded for this character yet",
+    };
+
     private void DrawControls()
     {
         var s = _session;
@@ -124,10 +136,11 @@ public sealed class ExportWindow : Window, IDisposable
         using (ImRaii.Disabled(busy))
         {
             if (ImGui.Button("Refresh Character Resources")) _ = s.RefreshAsync();
-            Tooltip("Reads the current resource mapping from PlayerSync. Nothing is downloaded.");
+            Tooltip("Reads the character's current files again. Nothing is downloaded.");
             ImGui.SameLine();
             if (ImGui.Button("Scan Character Resources")) _ = s.ResyncAsync();
-            Tooltip("Asks PlayerSync to run its normal sync for this character again. Cached files are reused; only missing files are downloaded. The character is redrawn.");
+            Tooltip("Redraws the character so the game loads all of its files again, then lists them. Nothing is downloaded by the exporter. " +
+                "(With a PlayerSync build that has the export IPC, PlayerSync re-runs its normal sync instead.)");
             ImGui.SameLine();
             if (ImGui.Button("Select All Available")) s.SelectAllAvailable();
             ImGui.SameLine();
@@ -158,7 +171,7 @@ public sealed class ExportWindow : Window, IDisposable
         {
             if (ImGui.Button("Verify Exported Files")) _ = s.RefreshAsync(verifyExported: true);
         }
-        Tooltip("Hashes files already in the export folder and compares them with PlayerSync's identifiers. Results are cached until a file changes.");
+        Tooltip("Hashes files already in the export folder and compares them with their SHA-1 identifiers. Results are cached until a file changes.");
         ImGui.SameLine();
         if (ImGui.Button("Settings")) _openSettings();
 

@@ -251,7 +251,7 @@ public class ExportCoordinatorTests
         var b = await coordinator.ExportAsync(new ExportTarget(42, "Alpha Beta", null), Settings.For(parent), [files[0].Hash], null, CancellationToken.None);
 
         Assert.False(a.Success);
-        Assert.Contains("not available", a.Message);
+        Assert.Equal(ps.UnavailableMessage, a.Message);
         Assert.False(b.Success);
         Assert.Contains("v2", b.Message);
         Assert.False(Directory.Exists(Path.Combine(parent, ExportSettings.DefaultRootFolderName)));

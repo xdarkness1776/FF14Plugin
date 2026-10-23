@@ -1,60 +1,58 @@
 # Installing Character Mod Exporter
 
-Two plugins are needed:
+Character Mod Exporter is an add-on for PlayerSync. You need:
 
-1. **PlayerSync with export IPC** (`PlayerSync-ExportIPC.zip`, built from `playersync-fork/`). It replaces your
-   normal PlayerSync and is loaded as a dev plugin (it is deliberately not listed in `repo.json`, because it uses
-   the same plugin identity as official PlayerSync).
-2. **Character Mod Exporter**, installed from this project's custom repository.
+* the official **PlayerSync**, installed and logged in as usual,
+* **Penumbra** (PlayerSync needs it anyway),
+* **Character Mod Exporter**, from this project's custom repository.
 
-Both zips are attached to every GitHub release of this repository (the Release workflow builds, tests and attaches
-them when a tag `v<version>` is pushed). CI runs also keep them as the `packages` artifact.
+Nothing in PlayerSync has to be replaced or reconfigured.
 
-## 1. Patched PlayerSync (dev plugin)
-
-1. Download `PlayerSync-ExportIPC.zip` from the latest release and extract it, for example to
-   `%AppData%\XIVLauncher\devPlugins\MareSempiterne\`.
-2. Launch FFXIV through XIVLauncher with Dalamud enabled.
-3. `/xlplugins` → Installed Plugins → **disable** the official PlayerSync (both use the identity `MareSempiterne`
-   and cannot load together). Your PlayerSync settings and cache stay where they are.
-4. `/xlsettings` → **Experimental** → **Dev Plugin Locations**: add the full path of `MareSempiterne.dll`, press
-   **+**, save.
-5. `/xlplugins` → Dev Tools → enable it. `/xllog` shows `Export IPC v1 registered`.
-
-To go back to stock PlayerSync: disable the dev build, remove its Dev Plugin Location, re-enable PlayerSync.
-
-## 2. Character Mod Exporter (custom repository)
+## Install
 
 1. `/xlsettings` → **Experimental** → **Custom Plugin Repositories**: add
    `https://raw.githubusercontent.com/xdarkness1776/FF14Plugin/main/repo.json`, tick **Enabled**, save.
-   (This file is created by the first release; until then it returns 404.)
 2. `/xlplugins` → All Plugins → search **Character Mod Exporter** → Install.
 3. Later releases show up as updates in `/xlplugins`.
 
-Alternatively load `CharacterModExporter.dll` from the release zip as a dev plugin, like step 1.
+Every GitHub release also has `CharacterModExporter.zip` attached (the Release workflow builds, tests and attaches it
+when a tag `v<version>` is pushed, or when a release with a new tag `v<version>` is published from GitHub's Releases
+page). CI runs keep it as the `packages` artifact.
 
 ## Use it
 
 1. Have ZoneSync (or a syncshell / pair) active in PlayerSync, and let the other character load.
 2. Right-click the character → **Export Character Mods**.
-3. In the window: **Refresh Character Resources** reads the current mapping; **Scan Character Resources** asks
-   PlayerSync to re-run its normal sync for that character (cached files reused, only missing ones downloaded,
-   the character is redrawn).
-4. Pick files (all available files are preselected) → **Export Selected**. The window waits for PlayerSync to
-   finish synchronizing, copies and verifies the files, and writes `Manifest.json` and `README.txt`.
+3. The window lists the files PlayerSync applied to that character, as Penumbra reports them:
+   * Only files the game has loaded are listed. Animations, VFX and sounds are added once they play while the window
+     is open (press **Refresh Character Resources** to update the list).
+   * **Scan Character Resources** redraws the character so the game loads its gear again. The exporter never
+     downloads anything; files PlayerSync has not downloaded yet cannot be listed.
+   * Only files from PlayerSync's cache folder (read from PlayerSync's settings, never changed) or from your own
+     Penumbra mod folder are offered.
+4. Pick files (all available files are preselected) → **Export Selected**. The window waits until no new files have
+   appeared for about 5 seconds, copies and verifies the files, and writes `Manifest.json` and `README.txt`.
 5. **Open Character Folder** shows the result:
 
 ```
 <parent>\FFXIV Character Mod Exports\<Name>_<World>\
     Assets\<sha1>.<ext>          raw game resources, PlayerSync cache names
-    Installable\<Name> (exported).pmp   only when every resource was exported
+    Installable\<Name> (exported).pmp   only when every listed file was exported
     Manifest.json
     README.txt
 ```
 
 6. To use a `.pmp`: Penumbra → Mods → Import Mod → pick the file → enable it in a collection. Nothing is
-   installed or enabled automatically.
+   installed or enabled automatically. Because only loaded files are listed, a package may miss emotes or effects
+   that never played; meta manipulations are never included.
 
 Settings (`/cmexport` or the cog in `/xlplugins`): parent folder (folder picker or typed path, validated),
 export folder name, reuse vs. timestamped folders, shared pool for files used by several characters, building the
-Penumbra package, sync wait time, and whether the menu entry shows only on PlayerSync-synced characters.
+Penumbra package, wait time, and whether the menu entry shows only on PlayerSync-synced characters.
+
+## Optional: PlayerSync build with the export IPC
+
+`playersync-fork/` still contains a small PlayerSync patch that exposes the complete applied mapping and the real
+sync state over IPC. It is not needed. If a PlayerSync build with that IPC is loaded, the exporter uses it
+automatically (the window's Source line says which source is in use). Release zips only include it when the
+repository variable `PUBLISH_PATCHED_PLAYERSYNC` is `true`; see `playersync-fork/README.md`.

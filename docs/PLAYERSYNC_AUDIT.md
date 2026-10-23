@@ -83,3 +83,23 @@ See `playersync-fork/README.md`. The patch (about 260 added lines, nothing remov
 
 Option C (exporter inside the fork) was not chosen: it would mix a large UI into a plugin that must be rebased on
 every PlayerSync update, while the IPC keeps the fork diff small and the exporter independently versioned.
+
+## Update (0.2): working with stock PlayerSync
+
+Replacing PlayerSync with a patched build is not acceptable for an add-on, so the exporter now reads what stock
+PlayerSync applied from Penumbra instead:
+
+* PlayerSync applies `moddedPaths` through a Penumbra temporary collection assigned to the character (step 5 above).
+  Penumbra's `GetGameObjectResourcePaths` (the same call PlayerSync uses for the local player) returns local file to
+  game paths for everything the character currently has loaded, and its `GameObjectResourcePathResolved` event reports
+  each further redirection (animations, VFX, sounds) as it loads.
+* `PlayerSync.GetHandledAddresses` (stock IPC) confirms the character is handled by PlayerSync.
+* The cache folder is read from PlayerSync's `pluginConfigs/MareSempiterne/config.json` (`CacheFolder`), read-only.
+  Files there are named by their SHA-1, which the copy verifies; files from the user's own Penumbra mod folder are
+  hashed by the exporter. Anything else is not offered.
+* Stock PlayerSync has no completion signal, so the state counts as settled once no new file appeared for 5 seconds.
+  "Scan" uses Penumbra's `RedrawObject`, which makes the game reload the character's resources; it downloads nothing.
+* Limits: resources that never loaded (an emote that never played) are not visible; meta manipulations are not
+  available (as before); file swaps resolve to game paths and are not listed.
+
+The export IPC patch stays available as an optional source with the complete mapping and the real sync state.

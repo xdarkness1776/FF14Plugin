@@ -158,6 +158,9 @@ public sealed class FakePlayerSync : IPlayerSyncExportApi, IDisposable
         => !Installed ? (ProviderStatus.NotInstalled, 0)
             : ProvidedVersion == ExportIpc.ApiVersion ? (ProviderStatus.Available, ProvidedVersion) : (ProviderStatus.IncompatibleVersion, ProvidedVersion);
 
+    public string SourceLabel => "Fake PlayerSync export IPC v" + ProvidedVersion;
+    public string UnavailableMessage => "Fake PlayerSync is not installed.";
+
     // Round-trip through JSON like the real IPC does.
     public CharacterStateDto GetCharacterState(uint entityId)
         => ExportJson.Deserialize<CharacterStateDto>(ExportJson.Serialize(Resolve(entityId).State))!;
