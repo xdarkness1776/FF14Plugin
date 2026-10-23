@@ -1,0 +1,4 @@
+# Upstream PlayerSync revision the export patch is made for. Update together with patches/.
+repo=https://github.com/universalconquistador/MareSynchronosClient
+commit=b2f8ce894edbaafda6fbda3c84b5561b878e513c
+version=1.15.5.9

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CharacterModExporter/CharacterModExporter.csproj" />
+    <Project Path="src/CharacterModExporter.Core/CharacterModExporter.Core.csproj" />
+    <Project Path="src/PlayerSyncExport.Contracts/PlayerSyncExport.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CharacterModExporter.Tests/CharacterModExporter.Tests.csproj" />
+    <Project Path="tests/CharacterModExporter.PenumbraCompatTests/CharacterModExporter.PenumbraCompatTests.csproj" />
+  </Folder>
+</Solution>
