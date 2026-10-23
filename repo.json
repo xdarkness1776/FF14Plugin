@@ -4,7 +4,7 @@
     "Name": "Character Mod Exporter",
     "InternalName": "CharacterModExporter",
     "AssemblyVersion": "0.3.0.0",
-    "Description": "An add-on for PlayerSync. Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose \"Export Character Mods\". The exporter reads from Penumbra which of PlayerSync's cached files are applied to that character, and copies them into a folder you choose, with a manifest, a report and, when the set is complete, a Penumbra mod package for manual import. Each item (gear piece, hairstyle, animations...) is also its own Penumbra mod, sorted into category folders and labelled with the races and body type it was made for.\n\nWorks with the official PlayerSync and Penumbra. It never downloads anything and never changes PlayerSync.",
+    "Description": "An add-on for PlayerSync. Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose \"Export Character Mods\". The exporter reads from Penumbra which of PlayerSync's cached files are applied to that character, and copies them into a folder you choose, with a manifest, a report and, when the set is complete, a Penumbra mod package for manual import.\n\nWorks with the official PlayerSync and Penumbra. It never downloads anything and never changes PlayerSync.",
     "Punchline": "Export the mod files PlayerSync applied to another character into a folder you choose.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -21,6 +21,6 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/xdarkness1776/FF14Plugin/releases/download/v0.3.0.0/CharacterModExporter.zip",
     "DownloadLinkUpdate": "https://github.com/xdarkness1776/FF14Plugin/releases/download/v0.3.0.0/CharacterModExporter.zip",
-    "LastUpdate": "1792790672"
+    "LastUpdate": "1792792383"
   }
 ]
