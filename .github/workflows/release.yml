@@ -1,8 +1,9 @@
 name: Release
 
-# Push a tag v<ExporterVersion> (for example v0.1.0.0) to publish.
-# The release is created only after build, tests and package checks pass, and repo.json is updated only
-# after the uploaded zip is downloadable without authentication.
+# Push a tag v<ExporterVersion> (for example v0.1.0.0) to publish, or publish a release with that new tag from
+# GitHub's Releases page (creating the tag there triggers this workflow too, and the zips are added to that release).
+# Without an existing release, one is created only after build, tests and package checks pass. repo.json is
+# updated only after the uploaded zip is downloadable without authentication.
 on:
   push:
     tags: ['v*']
@@ -71,8 +72,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --title "Character Mod Exporter $GITHUB_REF_NAME" \
-            --notes-file docs/RELEASE_NOTES.md --verify-tag
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            # Made on GitHub's Releases page together with the tag: attach the built zips to it.
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.zip --title "Character Mod Exporter $GITHUB_REF_NAME" \
+              --notes-file docs/RELEASE_NOTES.md --verify-tag
+          fi
 
       - name: Update repo.json
         env:

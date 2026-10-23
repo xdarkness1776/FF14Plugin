@@ -1,0 +1,26 @@
+[
+  {
+    "Author": "xdarkness1776",
+    "Name": "Character Mod Exporter",
+    "InternalName": "CharacterModExporter",
+    "AssemblyVersion": "0.1.0.0",
+    "Description": "Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose \"Export Character Mods\". The exporter waits for PlayerSync to finish synchronizing, then copies that character's resolved files from PlayerSync's cache into a folder you choose, with a manifest, a report and, when the mapping is complete, a Penumbra mod package for manual import.\n\nRequires a PlayerSync build with the export IPC (see the project README). It does not work with stock PlayerSync.",
+    "Punchline": "Export the mod files PlayerSync applied to another character into a folder you choose.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "RepoUrl": "https://github.com/xdarkness1776/FF14Plugin",
+    "Tags": [
+      "playersync",
+      "penumbra",
+      "export",
+      "mods"
+    ],
+    "AcceptsFeedback": true,
+    "TestingAssemblyVersion": null,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/xdarkness1776/FF14Plugin/releases/download/v0.1.0.0/CharacterModExporter.zip",
+    "DownloadLinkUpdate": "https://github.com/xdarkness1776/FF14Plugin/releases/download/v0.1.0.0/CharacterModExporter.zip",
+    "LastUpdate": "1792786711"
+  }
+]
