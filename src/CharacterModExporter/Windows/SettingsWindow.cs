@@ -97,7 +97,7 @@ public sealed class SettingsWindow : Window
         var pmp = export.BuildPenumbraPackage;
         if (ImGui.Checkbox("Build a Penumbra package (.pmp) when the mapping is complete", ref pmp)) { export.BuildPenumbraPackage = pmp; changed = true; }
         var itemMods = export.BuildItemMods;
-        if (ImGui.Checkbox("Build one Penumbra mod per item (Mods\\<category>), e.g. each gear piece, hairstyle, animations", ref itemMods)) { export.BuildItemMods = itemMods; changed = true; }
+        if (ImGui.Checkbox("Build one Penumbra mod per item, sorted into category folders under Mods (gear, hair, emotes...)", ref itemMods)) { export.BuildItemMods = itemMods; changed = true; }
         var onlySynced = export.OnlyShowForSyncedCharacters;
         if (ImGui.Checkbox("Only show the context menu entry on characters PlayerSync is syncing", ref onlySynced)) { export.OnlyShowForSyncedCharacters = onlySynced; changed = true; }
         var wait = export.SyncWaitSeconds;

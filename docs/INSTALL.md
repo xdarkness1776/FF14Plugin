@@ -40,14 +40,29 @@ page). CI runs keep it as the `packages` artifact.
 ```
 <parent>\FFXIV Character Mod Exports\<Name>_<World>\
     Assets\<sha1>.<ext>          raw game resources, PlayerSync cache names
-    Mods\<Category>\<Item> (<supports>) [<Name>].pmp   one Penumbra mod per item
+    Mods\<Group>\<Category>\<Item> (<supports>) [<Name>].pmp   one Penumbra mod per item
     Installable\<Name> (exported).pmp   the whole character, only when every listed file was exported
     Manifest.json
     README.txt
 ```
 
-6. `Mods\` holds one mod per item, sorted into category folders: Body, Head, Hands, Legs, Feet, Earrings, Necklace,
-   Bracelets, Rings, Weapon, Hair, Face, Ears, Tail, Body (skin), Animations, VFX, Sounds, Minion or mount, Other.
+6. `Mods\` holds one mod per item, sorted into category folders:
+
+   | Folder | What goes there |
+   | --- | --- |
+   | `Gear\Head`, `Body`, `Hands`, `Legs`, `Feet` (`Other gear`) | one mod per gear piece, with its skeleton/physics files |
+   | `Accessories\Earrings`, `Necklace`, `Bracelets`, `Rings` | one mod per accessory |
+   | `Weapons` | one mod per weapon model |
+   | `Character\Body` | body mods (Bibo+, Gen3, TBSE...), with the base skeleton |
+   | `Character\Hair`, `Face`, `Ears`, `Tail` | one mod per hairstyle, face, ears or tail, with its physics |
+   | `Character\Eyes`, `Face paint`, `Skin` | eye, face paint and shared skin textures |
+   | `Animations\Emotes` | one mod per emote (start, loop and end together) |
+   | `Animations\Idle and movement`, `Battle animations`, `Other animations` | one mod per kind |
+   | `VFX`, `Sounds`, `Minions and mounts` | |
+
+   Only real mods get a folder: an item needs a model, material or texture; animations a `.pap` or `.tmb`; VFX an
+   `.avfx` or `.atex`; sounds an `.scd`. Files that are not a mod on their own (shaders, loose support files) get no
+   mod and no category; the manifest lists them, and they stay in `Assets` and the full-character package.
    * Gear is named after the game item it replaces when the item list knows the model, e.g.
      `Body - <item name> (e0123)`. PlayerSync does not pass on the original mod names, so the
      mods are split by game item instead.

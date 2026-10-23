@@ -14,12 +14,21 @@ public class ItemModGrouperTests
     [InlineData("chara/accessory/a0042/model/c0201a0042_rir.mdl", "accessory:a0042:rir", "Ring (right)")]
     [InlineData("chara/weapon/w0201/obj/body/b0010/model/w0201b0010.mdl", "weapon:w0201b0010", "Weapon")]
     [InlineData("chara/human/c0801/obj/hair/h0105/model/c0801h0105_hir.mdl", "human:hair:h0105:c0801", "Hair")]
-    [InlineData("chara/human/c0801/obj/body/b0001/texture/--c0801b0001_b_d.tex", "human:body:b0001:c0801", "Body (skin)")]
-    [InlineData("chara/human/c0801/animation/a0001/bt_common/emote/dance.pap", "shared:animations", "Animations")]
+    [InlineData("chara/human/c0801/obj/body/b0001/texture/--c0801b0001_b_d.tex", "human:body:b0001:c0801", "Body mod")]
+    [InlineData("chara/human/c0801/animation/a0001/bt_common/emote/dance.pap", "shared:emote:dance", "Emote")]
+    [InlineData("chara/human/c0801/animation/a0001/bt_common/emote/s_pose01_loop.pap", "shared:emote:pose01", "Emote")]
+    [InlineData("chara/human/c0801/animation/a0001/bt_common/resident/idle.pap", "shared:anim:idle", "Idle and movement")]
+    [InlineData("chara/action/ability/x.tmb", "shared:anim:battle", "Battle animations")]
+    [InlineData("chara/human/c0801/skeleton/hair/h0105/phy_c0801h0105.phyb", "human:hair:h0105:c0801", "Hair")]
+    [InlineData("chara/human/c0801/skeleton/base/b0001/skl_c0801b0001.sklb", "human:body:b0001:c0801", "Body mod")]
+    [InlineData("chara/human/c0801/skeleton/top/t6188/phy_c0801t6188.phyb", "equipment:e6188:top", "Body")]
+    [InlineData("chara/common/texture/decal_face/_decal_12.tex", "common:facepaint", "Face paint")]
+    [InlineData("chara/common/texture/eye/eye01_base.tex", "common:eyes", "Eyes")]
     [InlineData("vfx/common/eff/x.avfx", "shared:vfx", "VFX")]
     [InlineData("sound/foot/x.scd", "shared:sounds", "Sounds")]
     [InlineData("chara/monster/m0123/obj/body/b0001/model/m0123b0001.mdl", "monster:m0123", "Minion or mount")]
-    [InlineData("chara/common/texture/skin_m.tex", "shared:other", "Other files")]
+    [InlineData("chara/common/texture/skin_m.tex", "common:skin", "Skin")]
+    [InlineData("shader/sm5/shpk/skin.shpk", "shared:other", "Other files")]
     public void ClassifiesGamePaths(string path, string key, string category)
     {
         var item = ItemModGrouper.Classify(path);
@@ -32,7 +41,10 @@ public class ItemModGrouperTests
     {
         Assert.Equal(2, ItemModGrouper.Classify("chara/equipment/e0123/material/v0002/mt_c0201e0123_top_a.mtrl").Variant);
         Assert.Equal(1, ItemModGrouper.Classify("chara/equipment/e0123/texture/v01_c0201e0123_top_d.tex").Variant);
-        Assert.Equal("Rings", ItemModGrouper.Classify("chara/accessory/a0001/model/c0101a0001_ril.mdl").Folder);
+        Assert.Equal("Accessories/Rings", ItemModGrouper.Classify("chara/accessory/a0001/model/c0101a0001_ril.mdl").Folder);
+        Assert.Equal("Gear/Body", ItemModGrouper.Classify("chara/equipment/e0001/model/c0101e0001_top.mdl").Folder);
+        Assert.Equal("Character/Body", ItemModGrouper.Classify("chara/human/c0801/obj/body/b0001/model/c0801b0001_top.mdl").Folder);
+        Assert.Equal("Animations/Emotes", ItemModGrouper.Classify("chara/human/c0801/animation/a0001/bt_common/emote/dance.pap").Folder);
     }
 
     [Fact]
@@ -79,15 +91,31 @@ public class ItemModGrouperTests
             Make("hair.mdl", "chara/human/c0201/obj/hair/h0101/model/c0201h0101_hir.mdl"),
             Make("emote.pap", "chara/human/c0201/animation/a0001/bt_common/emote/x.pap"),
             Make("loose.tex", "chara/common/texture/unused.tex"),
+            Make("skin.shpk", "shader/sm5/shpk/skin.shpk"),
         ], key => key.SetId == 123 && key.Slot == "top" ? "Test Coat" : null);
 
         var body = Assert.Single(groups, g => g.Item.Key == "equipment:e0123:top");
         Assert.Equal("Body - Test Coat (e0123)", body.Label);
         Assert.Equal(["d.tex", "m.mtrl", "n.tex", "top.mdl"], body.Files.Select(f => f.FileName));
         Assert.Contains(groups, g => g.Label == "Hair h0101 c0201");
-        Assert.Contains(groups, g => g.Label == "Animations");
+        Assert.Contains(groups, g => g.Label == "Emote - x");
         var other = Assert.Single(groups, g => g.Item.Key == "shared:other");
-        Assert.Equal(["loose.tex"], other.Files.Select(f => f.FileName));
+        Assert.Equal(["loose.tex", "skin.shpk"], other.Files.Select(f => f.FileName));
+        Assert.False(ItemModGrouper.IsMod(other));
+        Assert.True(ItemModGrouper.IsMod(body));
+    }
+
+    [Fact]
+    public void OnlyGroupsWithModContentAreMods()
+    {
+        ItemGroup G(string key, params string[] paths)
+            => new(ItemModGrouper.Classify(paths[0]) with { Key = key }, key, [new PackageFile("x", "x", paths)], new ItemSupport([], null, null));
+        Assert.False(ItemModGrouper.IsMod(G("human:hair:h0105:c0801", "chara/human/c0801/skeleton/hair/h0105/phy_c0801h0105.phyb")));
+        Assert.True(ItemModGrouper.IsMod(G("human:hair:h0105:c0801", "chara/human/c0801/obj/hair/h0105/model/c0801h0105_hir.mdl")));
+        Assert.False(ItemModGrouper.IsMod(G("shared:vfx", "vfx/common/texture/x.tex")));
+        Assert.True(ItemModGrouper.IsMod(G("shared:vfx", "vfx/common/eff/x.avfx")));
+        Assert.True(ItemModGrouper.IsMod(G("shared:emote:dance", "chara/human/c0801/animation/a0001/bt_common/emote/dance.pap")));
+        Assert.False(ItemModGrouper.IsMod(G("shared:sounds", "sound/x.sklb")));
     }
 
     [Fact]
@@ -154,6 +182,8 @@ public class ItemModExportTests
         var tex = src.AddCacheFile("tex", "coat diffuse");
         var hair = src.AddCacheFile("mdl", "hair model");
         var emote = src.AddCacheFile("pap", "dance");
+        var shader = src.AddCacheFile("shpk", "shader");
+        src.Tracker.Record("shader/sm5/shpk/skin.shpk", shader);
         src.Tracker.Record("chara/equipment/e0123/model/c0201e0123_top.mdl", top);
         src.Tracker.Record("chara/equipment/e0123/model/c0801e0123_top.mdl", top);
         src.Tracker.Record("chara/equipment/e0123/material/v0001/mt_c0201e0123_top_a.mtrl", mtrl);
@@ -170,7 +200,7 @@ public class ItemModExportTests
 
         Assert.True(outcome.Success, outcome.Message);
         var mods = outcome.Layout!.ModsFolder;
-        var coat = Assert.Single(Directory.GetFiles(Path.Combine(mods, "Body"), "*.pmp"));
+        var coat = Assert.Single(Directory.GetFiles(Path.Combine(mods, "Gear", "Body"), "*.pmp"));
         Assert.Equal("Body - Test Coat (e0123) (Female Hyur Midlander + Female Miqo'te) [Alpha Beta].pmp", Path.GetFileName(coat));
         Assert.Empty(PenumbraPackageBuilder.Validate(coat));
         using (var zip = ZipFile.OpenRead(coat))
@@ -182,15 +212,17 @@ public class ItemModExportTests
             Assert.Equal(4, redirects.Count);
         }
 
-        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Hair"), "*.pmp"));
-        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Animations"), "*.pmp"));
+        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Character", "Hair"), "*.pmp"));
+        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Animations", "Emotes"), "*.pmp"));
         Assert.Equal(3, outcome.Manifest!.InstallablePackages.Count(p => p.Item != null));
+        Assert.False(Directory.Exists(Path.Combine(mods, "Other files")));
+        Assert.Contains(outcome.Manifest.Notes, n => n.StartsWith("Not sorted into a mod category", StringComparison.Ordinal) && n.Contains("Other files (1 file(s))"));
         Assert.Contains("item mod(s), one per item", File.ReadAllText(outcome.Layout.ReadmePath));
 
         // Exporting the same character again keeps the identical item mods instead of adding copies.
         var again = await coordinator.ExportAsync(new ExportTarget(1, "Alpha Beta", "World"), Settings.For(parent), hashes, null, CancellationToken.None);
         Assert.True(again.Success, again.Message);
-        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Body"), "*.pmp"));
+        Assert.Single(Directory.GetFiles(Path.Combine(mods, "Gear", "Body"), "*.pmp"));
     }
 
     [Fact]
@@ -213,8 +245,8 @@ public class ItemModExportTests
         var outcome = await coordinator.ExportAsync(new ExportTarget(1, "Alpha Beta", null), Settings.For(parent), hashes, null, CancellationToken.None);
 
         Assert.True(outcome.Success, outcome.Message);
-        Assert.False(Directory.Exists(Path.Combine(outcome.Layout!.ModsFolder, "Body")));
-        Assert.Single(Directory.GetFiles(Path.Combine(outcome.Layout.ModsFolder, "Hair"), "*.pmp"));
+        Assert.False(Directory.Exists(Path.Combine(outcome.Layout!.ModsFolder, "Gear")));
+        Assert.Single(Directory.GetFiles(Path.Combine(outcome.Layout.ModsFolder, "Character", "Hair"), "*.pmp"));
         Assert.Contains(outcome.Manifest!.Notes, n => n.StartsWith("No item mod was built for Body e0123", StringComparison.Ordinal));
     }
 }
