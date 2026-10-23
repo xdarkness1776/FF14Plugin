@@ -30,10 +30,12 @@ public sealed class ExportCoordinator
     private readonly string _exporterVersion;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Func<ItemKey, string?>? _itemNames;
 
     public ExportCoordinator(IPlayerSyncExportApi api, ExportFolderService folders, string exporterVersion,
-        Func<TimeSpan, CancellationToken, Task>? delay = null, Func<DateTimeOffset>? clock = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null, Func<DateTimeOffset>? clock = null, Func<ItemKey, string?>? itemNames = null)
     {
+        _itemNames = itemNames;
         _api = api;
         _folders = folders;
         _exporterVersion = exporterVersion;
@@ -93,6 +95,8 @@ public sealed class ExportCoordinator
         var manifest = BuildManifest(target, settings, layout, final, hashes);
         if (final.State != null && settings.BuildPenumbraPackage)
             TryBuildPackage(target, layout, final, manifest);
+        if (final.State != null && settings.BuildItemMods)
+            BuildItemMods(target, layout, manifest);
 
         try
         {
@@ -244,6 +248,77 @@ public sealed class ExportCoordinator
         foreach (var asset in manifest.Assets.Where(a => a.ExportedFile != null)) asset.InInstallablePackage = true;
         if (manifest.Sync.HasMetaManipulations)
             manifest.Notes.Add("The package omits the character's meta manipulations, so some items may look different than in game.");
+    }
+
+    /// <summary>
+    /// One Penumbra mod per item under Mods/&lt;category&gt;. Items with a resource that was not exported are skipped,
+    /// so every item mod is complete for what PlayerSync applied. An identical mod from an earlier export is kept.
+    /// </summary>
+    private void BuildItemMods(ExportTarget target, ExportLayout layout, ExportManifest manifest)
+    {
+        var exported = manifest.Assets.Where(a => a.ExportedFile != null)
+            .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths))
+            .ToList();
+        var notExported = manifest.Assets.Where(a => a.ExportedFile == null).SelectMany(a => a.GamePaths)
+            .Concat(manifest.Unresolved.SelectMany(u => u.GamePaths))
+            .Select(gp => ItemModGrouper.Classify(gp).Key).ToHashSet(StringComparer.Ordinal);
+
+        var skipped = new List<string>();
+        foreach (var group in ItemModGrouper.Group(exported, _itemNames))
+        {
+            if (notExported.Contains(group.Item.Key))
+            {
+                skipped.Add(group.Label);
+                continue;
+            }
+
+            var folder = ExportPathPolicy.CombineWithin(layout.ModsFolder, ExportPathPolicy.SanitizeSegment(group.Item.Folder, "Other"));
+            var support = group.Support.IsKnown && !group.Item.IsShared ? $" ({group.Support.Short})" : string.Empty;
+            var modName = $"{group.Label}{support} [{target.Name}]";
+            var description = $"{group.Label} as PlayerSync applied it to {target.Name}{(target.World != null ? " @ " + target.World : string.Empty)}. " +
+                (group.Item.IsShared ? string.Empty : group.Support.Describe() + " ") +
+                $"Exported {manifest.ExportedAtUtc:yyyy-MM-dd} by Character Mod Exporter. The original mod's name and author are not transferred by PlayerSync. " +
+                "File replacements only; no meta manipulations, Glamourer or Customize+ data.";
+            var existing = FindIdenticalPackage(folder, modName, group.Files);
+            var result = existing != null
+                ? new PackageResult(existing, [], [], group.Files.Count, group.Files.Sum(f => f.GamePaths.Count), 0)
+                : PenumbraPackageBuilder.Build(folder, modName, description,
+                    manifest.ExportedAtUtc.ToString("yyyy.MM.dd", System.Globalization.CultureInfo.InvariantCulture), group.Files, new Dictionary<string, string>(),
+                    [group.Item.Category, .. group.Item.IsShared ? [] : group.Support.Tags, "Exported from " + target.Name]);
+            if (!result.Created)
+            {
+                manifest.Notes.Add($"The item mod '{group.Label}' could not be built: " + string.Join(" ", result.Problems));
+                continue;
+            }
+
+            manifest.InstallablePackages.Add(new ManifestPackage(Path.GetRelativePath(layout.SessionFolder, result.PackagePath!),
+                "Penumbra mod package (.pmp) for one item, mod file version 3", result.FileCount, result.RedirectCount, result.SwapCount,
+                existing != null ? "Identical to the package from an earlier export, kept as is." : "Structure checked after writing. Import in Penumbra has not been verified by this tool.",
+                result.Omitted, group.Item.Category, group.Label, group.Item.IsShared ? null : group.Support.Describe()));
+            var names = group.Files.Select(f => f.FileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var asset in manifest.Assets.Where(a => a.ExportedFile != null && names.Contains(Path.GetFileName(a.ExportedFile)))) asset.InInstallablePackage = true;
+        }
+
+        if (skipped.Count > 0)
+            manifest.Notes.Add($"No item mod was built for {string.Join(", ", skipped)}: some of their files were not exported.");
+    }
+
+    /// <summary>Path of an existing package with the same name and exactly the same redirections, if any.</summary>
+    private static string? FindIdenticalPackage(string folder, string modName, IReadOnlyList<PackageFile> files)
+    {
+        var path = Path.Combine(folder, ExportPathPolicy.SanitizeSegment(modName, "Character", 80) + ".pmp");
+        if (!File.Exists(path) || PenumbraPackageBuilder.Validate(path).Count > 0) return null;
+        var planned = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var f in files)
+        {
+            foreach (var gp in f.GamePaths)
+            {
+                var n = PenumbraPackageBuilder.NormalizeGamePath(gp);
+                if (n != null) planned.TryAdd(n, "files\\" + f.FileName);
+            }
+        }
+
+        return PenumbraPackageBuilder.ReadRedirects(path) is { } actual && actual.SequenceEqual(planned) ? path : null;
     }
 
     private static ExportOutcome Fail(string message, ExportLayout? layout = null)

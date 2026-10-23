@@ -4,7 +4,8 @@ A Dalamud add-on for PlayerSync in FINAL FANTASY XIV. Right-click another player
 ZoneSync, a syncshell or a direct pair) and choose **Export Character Mods**. The exporter asks Penumbra which files
 PlayerSync applied to that character, keeps the ones from PlayerSync's cache (or your own Penumbra mod folder), waits
 until loading has settled, and copies them into a folder you choose, together with `Manifest.json`, `README.txt` and,
-when the set is complete, a Penumbra mod package (`.pmp`) for manual import.
+when the set is complete, a Penumbra mod package (`.pmp`) for manual import. Each item (gear piece, hairstyle,
+animations, ...) is also written as its own `.pmp` under `Mods\<Category>\`, with the races and body type it was made for.
 
 **Works with the official PlayerSync.** Nothing in PlayerSync is replaced or changed. Stock PlayerSync has no IPC
 for a character's files (see [docs/PLAYERSYNC_AUDIT.md](docs/PLAYERSYNC_AUDIT.md)), but it applies them through a
@@ -27,7 +28,7 @@ not endorsed by the PlayerSync team, and not required.
 | Automated tests | pass: path safety, verified copying, cache preservation, Penumbra source (path handling, settling, filtering), waiting, cancellation, folders, manifest, `.pmp` validated with Penumbra's own path parser |
 | Optional patched PlayerSync (Release) | builds from `playersync-fork/apply.sh` |
 | In-game behaviour | version 0.1 loaded in game and opened the export window from the context menu; the Penumbra source (0.2) is **not tested in game yet**; see [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md) |
-| `.pmp` import into Penumbra | structure validated, real import not tested yet |
+| `.pmp` import into Penumbra (full and per item) | structure validated, real import not tested yet |
 
 ## Docs
 

@@ -58,7 +58,8 @@ public sealed class ManifestAsset
 
 public sealed record ManifestFileSwap(string ObjectKind, List<string> GamePaths, string? Target);
 public sealed record ManifestUnresolved(string ObjectKind, List<string> GamePaths, string? Hash, string Reason);
-public sealed record ManifestPackage(string File, string Format, int Files, int Redirects, int FileSwaps, string Validation, List<string> Omitted);
+public sealed record ManifestPackage(string File, string Format, int Files, int Redirects, int FileSwaps, string Validation, List<string> Omitted,
+    string? Category = null, string? Item = null, string? Supports = null);
 
 public static class ManifestWriter
 {
@@ -118,10 +119,23 @@ public static class ManifestWriter
         }
         else
         {
-            foreach (var p in m.InstallablePackages)
+            foreach (var p in m.InstallablePackages.Where(p => p.Item == null))
             {
                 sb.AppendLine(inv, $"- {p.File} ({p.Format}): {p.Redirects} file redirection(s), {p.FileSwaps} swap(s).");
                 sb.AppendLine(inv, $"  Validation: {p.Validation}");
+            }
+
+            var items = m.InstallablePackages.Where(p => p.Item != null).ToList();
+            if (items.Count > 0)
+            {
+                sb.AppendLine(inv, $"- {items.Count} item mod(s), one per item, sorted by category in the '{ExportFolderService.ModsFolderName}' folder:");
+                foreach (var p in items)
+                {
+                    sb.AppendLine(inv, $"    {p.File}: {p.Redirects} file redirection(s).");
+                    if (p.Supports != null) sb.AppendLine(inv, $"      {p.Supports}");
+                }
+                sb.AppendLine("  PlayerSync does not transfer the original mod names, so items are split and named by the game");
+                sb.AppendLine("  item their files replace. A mod made for another race or body may not fit your character.");
             }
             sb.AppendLine("  To install: open Penumbra (/penumbra), Mods tab, 'Import Mod', pick the .pmp file,");
             sb.AppendLine("  then enable the mod in the collection you want. Nothing is installed or enabled automatically.");

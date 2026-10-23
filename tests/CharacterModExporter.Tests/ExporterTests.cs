@@ -196,7 +196,7 @@ public class ExportCoordinatorTests
         Assert.All(manifest.Assets, a => Assert.NotNull(a.Sha256));
         Assert.Single(manifest.FileSwaps);
         Assert.True(manifest.Sync.IsZoneSyncOnly);
-        var package = Assert.Single(manifest.InstallablePackages);
+        var package = Assert.Single(manifest.InstallablePackages, p => p.Item == null);
         Assert.Empty(PenumbraPackageBuilder.Validate(Path.Combine(layout.SessionFolder, package.File)));
         Assert.Contains("individual game resource", File.ReadAllText(layout.ReadmePath));
         Assert.Equal(cacheBefore, Snapshot.Of(ps.CacheFolder));
@@ -216,7 +216,9 @@ public class ExportCoordinatorTests
 
         var manifest = outcome.Manifest!;
         Assert.Single(manifest.Unresolved);
-        Assert.Empty(manifest.InstallablePackages);
+        // The full-character package needs every file; item mods for complete items are still built.
+        Assert.DoesNotContain(manifest.InstallablePackages, p => p.Item == null);
+        Assert.All(manifest.InstallablePackages, p => Assert.StartsWith("Mods/", p.File));
         Assert.False(Directory.Exists(outcome.Layout!.InstallableFolder));
         Assert.Contains(manifest.Notes, n => n.Contains("No Penumbra package"));
         Assert.Contains("chara/missing.tex", File.ReadAllText(outcome.Layout.ReadmePath));
