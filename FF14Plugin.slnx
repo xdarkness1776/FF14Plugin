@@ -1,8 +1,6 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/CharacterModExporter/CharacterModExporter.csproj">
-      <Platform Project="x64" />
-    </Project>
+    <Project Path="src/CharacterModExporter/CharacterModExporter.csproj" />
     <Project Path="src/CharacterModExporter.Core/CharacterModExporter.Core.csproj" />
     <Project Path="src/PlayerSyncExport.Contracts/PlayerSyncExport.Contracts.csproj" />
   </Folder>
