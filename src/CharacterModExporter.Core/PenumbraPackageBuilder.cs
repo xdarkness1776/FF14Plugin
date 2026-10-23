@@ -45,7 +45,7 @@ public static class PenumbraPackageBuilder
     }
 
     public static PackageResult Build(string outputDirectory, string modName, string description, string version,
-        IReadOnlyList<PackageFile> files, IReadOnlyDictionary<string, string> fileSwaps)
+        IReadOnlyList<PackageFile> files, IReadOnlyDictionary<string, string> fileSwaps, IReadOnlyList<string>? tags = null)
     {
         var problems = new List<string>();
         var omitted = new List<string>();
@@ -115,7 +115,7 @@ public static class PenumbraPackageBuilder
             ["Description"] = description,
             ["Version"] = version,
             ["Website"] = string.Empty,
-            ["ModTags"] = new JsonArray(),
+            ["ModTags"] = new JsonArray((tags ?? []).Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()),
         };
         var defaultMod = new JsonObject
         {
@@ -236,6 +236,26 @@ public static class PenumbraPackageBuilder
         }
 
         return problems;
+    }
+
+    /// <summary>The Files map of a package's default option, sorted, or null if it cannot be read.</summary>
+    public static SortedDictionary<string, string>? ReadRedirects(string packagePath)
+    {
+        try
+        {
+            using var zip = ZipFile.OpenRead(packagePath);
+            var entry = zip.GetEntry("default_mod.json");
+            if (entry == null) return null;
+            using var stream = entry.Open();
+            if (JsonNode.Parse(stream)?["Files"] is not JsonObject files) return null;
+            var map = new SortedDictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (k, v) in files) map[k] = v?.GetValue<string>() ?? string.Empty;
+            return map;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static void RemoveIfEmpty(string directory, bool createdByUs)

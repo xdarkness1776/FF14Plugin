@@ -28,6 +28,9 @@ public sealed class ExportSettings
     /// <summary>Also build a Penumbra mod package (.pmp) when the mapping allows it.</summary>
     public bool BuildPenumbraPackage { get; set; } = true;
 
+    /// <summary>Also build one Penumbra mod per item (gear piece, hair, animations, ...) under Mods/&lt;category&gt;.</summary>
+    public bool BuildItemMods { get; set; } = true;
+
     /// <summary>How long the export waits for PlayerSync to finish a running synchronization.</summary>
     public int SyncWaitSeconds { get; set; } = 120;
 

@@ -212,7 +212,7 @@ public class PenumbraSourceExportTests
         Assert.True(outcome.Success, outcome.Message);
         Assert.All(outcome.Files, f => Assert.True(f.Sha1Verified));
         Assert.Equal(2, Directory.GetFiles(outcome.Layout!.AssetsFolder).Length);
-        var package = Assert.Single(outcome.Manifest!.InstallablePackages);
+        var package = Assert.Single(outcome.Manifest!.InstallablePackages, p => p.Item == null);
         using (var zip = ZipFile.OpenRead(Path.Combine(outcome.Layout.SessionFolder, package.File)))
             Assert.Contains(zip.Entries, e => e.FullName == "default_mod.json");
         Assert.Contains(outcome.Manifest.Notes, n => n.StartsWith("Read from Penumbra", StringComparison.Ordinal));

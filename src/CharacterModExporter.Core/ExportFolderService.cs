@@ -7,6 +7,9 @@ public sealed record ExportLayout(string Root, string CharacterFolder, string Se
 {
     public string ManifestPath => Path.Combine(SessionFolder, "Manifest.json");
     public string ReadmePath => Path.Combine(SessionFolder, "README.txt");
+
+    /// <summary>One Penumbra mod per item, in a folder per category.</summary>
+    public string ModsFolder => Path.Combine(SessionFolder, ExportFolderService.ModsFolderName);
 }
 
 /// <summary>
@@ -17,6 +20,7 @@ public sealed class ExportFolderService
 {
     public const string AssetsFolderName = "Assets";
     public const string InstallableFolderName = "Installable";
+    public const string ModsFolderName = "Mods";
     public const string SharedAssetsFolderName = "_SharedAssets";
 
     private readonly Func<string> _documentsProvider;

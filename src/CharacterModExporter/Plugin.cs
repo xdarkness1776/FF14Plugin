@@ -22,6 +22,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IChatGui Chat { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static IDataManager Data { get; private set; } = null!;
 
     private readonly WindowSystem _windows = new("CharacterModExporter");
     private readonly Dictionary<uint, ExportWindow> _exportWindows = [];
@@ -46,7 +47,8 @@ public sealed class Plugin : IDalamudPlugin
         _folders = new ExportFolderService(ForbiddenRoots);
         _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, Log, _ipc, ForbiddenRoots);
         _source = new ExportSourceRouter(_ipc, _penumbra);
-        _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString());
+        var itemNames = new ItemNameService(Data, Log);
+        _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString(), itemNames: itemNames.Resolve);
         _selection = new CharacterSelectionService(ObjectTable, Framework);
 
         _settingsWindow = new SettingsWindow(_config, _folders, OpenFolder);

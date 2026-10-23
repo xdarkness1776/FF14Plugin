@@ -37,12 +37,23 @@ page). CI runs keep it as the `packages` artifact.
 ```
 <parent>\FFXIV Character Mod Exports\<Name>_<World>\
     Assets\<sha1>.<ext>          raw game resources, PlayerSync cache names
-    Installable\<Name> (exported).pmp   only when every listed file was exported
+    Mods\<Category>\<Item> (<supports>) [<Name>].pmp   one Penumbra mod per item
+    Installable\<Name> (exported).pmp   the whole character, only when every listed file was exported
     Manifest.json
     README.txt
 ```
 
-6. To use a `.pmp`: Penumbra → Mods → Import Mod → pick the file → enable it in a collection. Nothing is
+6. `Mods\` holds one mod per item, sorted into category folders: Body, Head, Hands, Legs, Feet, Earrings, Necklace,
+   Bracelets, Rings, Weapon, Hair, Face, Ears, Tail, Body (skin), Animations, VFX, Sounds, Minion or mount, Other.
+   * Gear is named after the game item it replaces when the item list knows the model, e.g.
+     `Body - <item name> (e0123)`. PlayerSync does not pass on the original mod names, so the
+     mods are split by game item instead.
+   * Gear, hair and body mods say what they were made for: the races and genders found in the model and texture
+     paths, and the body type (Bibo+, Gen3, TBSE, HRBody, YAB, Tight&Firm) when the paths show it. The same appears in
+     the mod's description and as Penumbra tags. A mod made for another race or body may not fit yours.
+   * An item whose files were not all exported gets no mod (the manifest says which). Exporting the same character
+     again keeps identical item mods instead of adding copies. Settings can turn item mods off.
+7. To use a `.pmp`: Penumbra → Mods → Import Mod → pick the file → enable it in a collection. Nothing is
    installed or enabled automatically. Because only loaded files are listed, a package may miss emotes or effects
    that never played; meta manipulations are never included.
 
