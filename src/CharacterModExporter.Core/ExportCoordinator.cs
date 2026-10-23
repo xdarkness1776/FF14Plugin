@@ -264,15 +264,23 @@ public sealed class ExportCoordinator
             .Select(gp => ItemModGrouper.Classify(gp).Key).ToHashSet(StringComparer.Ordinal);
 
         var skipped = new List<string>();
+        var notMods = new List<string>();
         foreach (var group in ItemModGrouper.Group(exported, _itemNames))
         {
+            if (!ItemModGrouper.IsMod(group))
+            {
+                notMods.Add($"{group.Label} ({group.Files.Count} file(s))");
+                continue;
+            }
+
             if (notExported.Contains(group.Item.Key))
             {
                 skipped.Add(group.Label);
                 continue;
             }
 
-            var folder = ExportPathPolicy.CombineWithin(layout.ModsFolder, ExportPathPolicy.SanitizeSegment(group.Item.Folder, "Other"));
+            var folder = ExportPathPolicy.CombineWithin(layout.ModsFolder,
+                [.. group.Item.Folder.Split('/').Select(segment => ExportPathPolicy.SanitizeSegment(segment, "Other"))]);
             var support = group.Support.IsKnown && !group.Item.IsShared ? $" ({group.Support.Short})" : string.Empty;
             var modName = $"{group.Label}{support} [{target.Name}]";
             var description = $"{group.Label} as PlayerSync applied it to {target.Name}{(target.World != null ? " @ " + target.World : string.Empty)}. " +
@@ -301,6 +309,9 @@ public sealed class ExportCoordinator
 
         if (skipped.Count > 0)
             manifest.Notes.Add($"No item mod was built for {string.Join(", ", skipped)}: some of their files were not exported.");
+        if (notMods.Count > 0)
+            manifest.Notes.Add($"Not sorted into a mod category, because they are not a mod on their own: {string.Join(", ", notMods)}. " +
+                "These files are still in Assets and in the full-character package.");
     }
 
     /// <summary>Path of an existing package with the same name and exactly the same redirections, if any.</summary>

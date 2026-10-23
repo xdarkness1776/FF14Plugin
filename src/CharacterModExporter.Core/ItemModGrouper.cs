@@ -16,10 +16,25 @@ namespace CharacterModExporter.Core;
 /// <param name="WeaponBody">Weapon body id (b####), for weapons.</param>
 public sealed record ItemKey(string Key, string Category, string Code, int? SetId = null, string? Slot = null, int? Variant = null, int? WeaponBody = null)
 {
-    public bool IsShared => Key.StartsWith("shared:", StringComparison.Ordinal);
+    /// <summary>Not one game item: animations, VFX, sounds, eyes, face paint, skin and other files.</summary>
+    public bool IsShared => Key.StartsWith("shared:", StringComparison.Ordinal) || Key.StartsWith("common:", StringComparison.Ordinal);
 
-    /// <summary>Category folder inside Mods (both ring slots share one folder).</summary>
-    public string Folder => Slot is "rir" or "ril" ? "Rings" : Category;
+    /// <summary>Folder inside Mods, e.g. "Gear/Body", "Character/Hair", "Animations/Emotes".</summary>
+    public string Folder => Category switch
+    {
+        "Head" or "Body" or "Hands" or "Legs" or "Feet" => "Gear/" + Category,
+        "Equipment" => "Gear/Other gear",
+        "Earrings" or "Necklace" or "Bracelets" => "Accessories/" + Category,
+        "Ring (right)" or "Ring (left)" => "Accessories/Rings",
+        "Accessory" => "Accessories/Other accessories",
+        "Weapon" => "Weapons",
+        "Body mod" => "Character/Body",
+        "Hair" or "Face" or "Ears" or "Tail" or "Eyes" or "Face paint" or "Skin" => "Character/" + Category,
+        "Emote" => "Animations/Emotes",
+        "Battle animations" or "Idle and movement" or "Other animations" => "Animations/" + Category,
+        "Minion or mount" => "Minions and mounts",
+        _ => Category,
+    };
 }
 
 /// <summary>The files of one item, ready to be packaged as its own Penumbra mod.</summary>
@@ -67,7 +82,7 @@ public static partial class ItemModGrouper
 
     private static readonly Dictionary<string, string> HumanParts = new(StringComparer.Ordinal)
     {
-        ["hair"] = "Hair", ["face"] = "Face", ["tail"] = "Tail", ["zear"] = "Ears", ["body"] = "Body (skin)",
+        ["hair"] = "Hair", ["face"] = "Face", ["tail"] = "Tail", ["zear"] = "Ears", ["body"] = "Body mod",
     };
 
     [GeneratedRegex(@"^chara/equipment/e(\d{4})/")] private static partial Regex Equipment();
@@ -78,6 +93,8 @@ public static partial class ItemModGrouper
     [GeneratedRegex(@"^chara/human/(c\d{4})/obj/(hair|face|tail|zear|body)/([a-z])(\d{4})/")] private static partial Regex HumanPart();
     [GeneratedRegex(@"^chara/(monster|demihuman)/([md])(\d{4})/")] private static partial Regex NonHuman();
     [GeneratedRegex(@"(?:^|[/_-])c(\d{2})(\d{2})(?=[/_a-z.])")] private static partial Regex RaceCode();
+    [GeneratedRegex(@"^chara/human/(c\d{4})/skeleton/(hair|face|base|met|top)/[a-z](\d{4})/")] private static partial Regex HumanSkeleton();
+    [GeneratedRegex(@"/emote/(?:[a-z]_)?([a-z0-9_]+?)(?:_(?:start|loop|end|st|lp|ed))?\.(?:pap|tmb)$")] private static partial Regex EmoteName();
 
     private static readonly string[] Races =
     [
@@ -133,12 +150,13 @@ public static partial class ItemModGrouper
     {
         var p = gamePath.Replace('\\', '/').ToLowerInvariant();
 
-        if (p.EndsWith(".pap", StringComparison.Ordinal) || p.Contains("/animation/", StringComparison.Ordinal) || p.StartsWith("chara/action/", StringComparison.Ordinal))
-            return new("shared:animations", "Animations", "animations");
+        if (p.EndsWith(".pap", StringComparison.Ordinal) || p.EndsWith(".tmb", StringComparison.Ordinal) || p.Contains("/animation/", StringComparison.Ordinal)
+            || p.StartsWith("chara/action/", StringComparison.Ordinal))
+            return Animation(p);
         if (p.StartsWith("vfx/", StringComparison.Ordinal) || p.EndsWith(".avfx", StringComparison.Ordinal) || p.EndsWith(".atex", StringComparison.Ordinal))
-            return new("shared:vfx", "VFX", "vfx");
+            return new("shared:vfx", "VFX", string.Empty);
         if (p.StartsWith("sound/", StringComparison.Ordinal) || p.EndsWith(".scd", StringComparison.Ordinal))
-            return new("shared:sounds", "Sounds", "sounds");
+            return new("shared:sounds", "Sounds", string.Empty);
 
         var m = Equipment().Match(p);
         if (m.Success) return Gear("equipment", "e", m.Groups[1].Value, p);
@@ -153,25 +171,63 @@ public static partial class ItemModGrouper
         }
 
         m = HumanPart().Match(p);
+        if (m.Success) return Human(m.Groups[2].Value, m.Groups[3].Value + m.Groups[4].Value, m.Groups[1].Value);
+
+        // Skeletons and physics belong to the hair, face, body or gear piece they move.
+        m = HumanSkeleton().Match(p);
         if (m.Success)
         {
-            var part = m.Groups[2].Value;
-            var code = $"{m.Groups[3].Value}{m.Groups[4].Value}";
-            // Hair, faces, tails and ears are usually modded for one race and gender at a time.
-            return new($"human:{part}:{code}:{m.Groups[1].Value}", HumanParts[part], $"{code} {m.Groups[1].Value}");
+            var race = m.Groups[1].Value;
+            var id = m.Groups[3].Value;
+            switch (m.Groups[2].Value)
+            {
+                case "hair": return Human("hair", "h" + id, race);
+                case "face": return Human("face", "f" + id, race);
+                case "base": return Human("body", "b" + id, race);
+                case "met": return Gear("equipment", "e", id, $"chara/equipment/e{id}/_met.");
+                case "top": return Gear("equipment", "e", id, $"chara/equipment/e{id}/_top.");
+            }
         }
 
-        if (p.StartsWith("chara/human/", StringComparison.Ordinal) && p.Contains("/skeleton/", StringComparison.Ordinal))
-            return new("human:skeleton", "Skeleton", "skeleton");
+        if (p.StartsWith("chara/common/texture/decal_face/", StringComparison.Ordinal))
+            return new("common:facepaint", "Face paint", string.Empty);
+        if (p.StartsWith("chara/common/texture/eye/", StringComparison.Ordinal) || p.Contains("_iri_", StringComparison.Ordinal))
+            return new("common:eyes", "Eyes", string.Empty);
+        if (p.StartsWith("chara/common/texture/skin", StringComparison.Ordinal))
+            return new("common:skin", "Skin", string.Empty);
 
         m = NonHuman().Match(p);
         if (m.Success)
         {
             var code = $"{m.Groups[2].Value}{m.Groups[3].Value}";
-            return new($"{m.Groups[1].Value}:{code}", m.Groups[1].Value == "monster" ? "Minion or mount" : "Companion or mount", code);
+            return new($"{m.Groups[1].Value}:{code}", "Minion or mount", code);
         }
 
-        return new("shared:other", "Other files", "other");
+        return new(OtherKey, "Other files", string.Empty);
+    }
+
+    public const string OtherKey = "shared:other";
+
+    private static ItemKey Human(string part, string code, string race)
+        // Hair, faces, tails and ears are usually modded for one race and gender at a time.
+        => new($"human:{part}:{code}:{race}", HumanParts[part], $"{code} {race}");
+
+    /// <summary>Emotes become one mod each (start, loop and end together); idle, movement and battle animations one mod per kind.</summary>
+    private static ItemKey Animation(string p)
+    {
+        var emote = EmoteName().Match(p);
+        if (emote.Success)
+        {
+            var name = emote.Groups[1].Value;
+            return new($"shared:emote:{name}", "Emote", name.Replace('_', ' '));
+        }
+
+        if (p.StartsWith("chara/action/", StringComparison.Ordinal) || p.Contains("/battle/", StringComparison.Ordinal) || p.Contains("/ability/", StringComparison.Ordinal))
+            return new("shared:anim:battle", "Battle animations", string.Empty);
+        if (p.Contains("/resident/", StringComparison.Ordinal) || p.Contains("idle", StringComparison.Ordinal) || p.Contains("/move", StringComparison.Ordinal)
+            || p.Contains("/walk", StringComparison.Ordinal) || p.Contains("/run", StringComparison.Ordinal))
+            return new("shared:anim:idle", "Idle and movement", string.Empty);
+        return new("shared:anim:other", "Other animations", string.Empty);
     }
 
     private static ItemKey Gear(string kind, string prefix, string id, string path)
@@ -267,6 +323,24 @@ public static partial class ItemModGrouper
             .ToList();
     }
 
+    /// <summary>
+    /// Whether a group is a mod on its own: an item needs a model, material or texture; animations a .pap or .tmb;
+    /// VFX an .avfx or .atex; sounds an .scd. Files that fit no category (shaders, loose support files) are never one.
+    /// </summary>
+    public static bool IsMod(ItemGroup group)
+    {
+        if (group.Item.Key == OtherKey) return false;
+        var extensions = group.Files.SelectMany(f => f.GamePaths).Select(gp => Path.GetExtension(gp).ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+        string[] needed = group.Item.Key switch
+        {
+            var k when k.StartsWith("shared:emote:", StringComparison.Ordinal) || k.StartsWith("shared:anim:", StringComparison.Ordinal) => [".pap", ".tmb"],
+            "shared:vfx" => [".avfx", ".atex"],
+            "shared:sounds" => [".scd"],
+            _ => [".mdl", ".mtrl", ".tex"],
+        };
+        return needed.Any(extensions.Contains);
+    }
+
     private static string Label(ItemKey item, Func<ItemKey, string?>? itemName)
     {
         string? name = null;
@@ -279,7 +353,8 @@ public static partial class ItemModGrouper
             // Names are cosmetic; fall back to the game id.
         }
 
-        if (item.IsShared) return item.Category;
+        if (item.Code.Length == 0) return item.Category;
+        if (item.IsShared) return $"{item.Category} - {item.Code}";
         return string.IsNullOrWhiteSpace(name) ? $"{item.Category} {item.Code}" : $"{item.Category} - {name} ({item.Code})";
     }
 
