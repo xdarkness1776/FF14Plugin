@@ -27,6 +27,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<uint, ExportWindow> _exportWindows = [];
     private readonly Configuration _config;
     private readonly PlayerSyncIpcClient _ipc;
+    private readonly PenumbraExportSource _penumbra;
+    private readonly ExportSourceRouter _source;
     private readonly ExportFolderService _folders;
     private readonly ExportCoordinator _coordinator;
     private readonly CharacterSelectionService _selection;
@@ -42,7 +44,9 @@ public sealed class Plugin : IDalamudPlugin
         _ipc = new PlayerSyncIpcClient(PluginInterface, Log);
         _penumbraModDirectory = PluginInterface.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         _folders = new ExportFolderService(ForbiddenRoots);
-        _coordinator = new ExportCoordinator(_ipc, _folders, PluginInterface.Manifest.AssemblyVersion.ToString());
+        _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, Log, _ipc, ForbiddenRoots);
+        _source = new ExportSourceRouter(_ipc, _penumbra);
+        _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString());
         _selection = new CharacterSelectionService(ObjectTable, Framework);
 
         _settingsWindow = new SettingsWindow(_config, _folders, OpenFolder);
@@ -70,7 +74,7 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception)
         {
-            // Not fatal; PlayerSync checks its own folders again on its side.
+            // Not fatal; the other roots are still checked.
         }
 
         yield return gameDir;
@@ -87,6 +91,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         yield return penumbra;
+        yield return PlayerSyncConfigReader.ReadCacheFolder(PluginInterface.ConfigDirectory.Parent?.FullName);
     }
 
     private void OpenExportWindow(ExportTarget target)
@@ -107,7 +112,7 @@ public sealed class Plugin : IDalamudPlugin
             _exportWindows.Remove(target.EntityId);
         }
 
-        var session = new ExportSession(target, _ipc, _folders, _coordinator, () => _config.Export, _selection.IsStillPresentAsync);
+        var session = new ExportSession(target, _source, _folders, _coordinator, () => _config.Export, _selection.IsStillPresentAsync);
         var window = new ExportWindow(session, () => _settingsWindow.IsOpen = true, OpenFolder);
         _exportWindows[target.EntityId] = window;
         _windows.AddWindow(window);
@@ -124,9 +129,10 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(Command);
         _contextMenu.Dispose();
 
-        // Cancels running exports; PlayerSync cleans up its partial files.
+        // Cancels running exports; partial files are cleaned up by the job runner.
         foreach (var window in _exportWindows.Values) window.Dispose();
         _exportWindows.Clear();
         _windows.RemoveAllWindows();
+        _penumbra.Dispose();
     }
 }

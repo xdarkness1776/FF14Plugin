@@ -36,6 +36,8 @@ public sealed class ExportSession : IDisposable
     public ExportTarget Target { get; }
     public ProviderStatus Provider { get; private set; } = ProviderStatus.NotInstalled;
     public int ProviderVersion { get; private set; }
+    public string SourceLabel => _api.SourceLabel;
+    public string UnavailableMessage => _api.UnavailableMessage;
     public bool TargetPresent { get; private set; } = true;
     public CharacterStateDto? State { get; private set; }
     public AssetInventory Inventory { get; private set; } = new();
@@ -140,7 +142,7 @@ public sealed class ExportSession : IDisposable
         {
             LastError = Provider == ProviderStatus.IncompatibleVersion
                 ? $"PlayerSync provides export IPC v{ProviderVersion}; this exporter needs v{ExportIpc.ApiVersion}."
-                : "PlayerSync with the export IPC is not loaded.";
+                : _api.UnavailableMessage;
             return false;
         }
 

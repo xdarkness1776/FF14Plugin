@@ -49,7 +49,7 @@ public sealed class ExportCoordinator
         {
             return Fail(status == ProviderStatus.IncompatibleVersion
                 ? $"PlayerSync provides export IPC v{version}, this exporter needs v{ExportIpc.ApiVersion}. Update both to matching versions."
-                : "The PlayerSync export IPC is not available. A PlayerSync build with the export IPC must be installed and loaded.");
+                : _api.UnavailableMessage);
         }
 
         var hashes = selectedCacheHashes.Where(ExportPathPolicy.IsSha1Hex).Select(h => h.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToList();
