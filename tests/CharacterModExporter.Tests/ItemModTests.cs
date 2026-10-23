@@ -110,12 +110,61 @@ public class ItemModGrouperTests
     {
         ItemGroup G(string key, params string[] paths)
             => new(ItemModGrouper.Classify(paths[0]) with { Key = key }, key, [new PackageFile("x", "x", paths)], new ItemSupport([], null, null));
-        Assert.False(ItemModGrouper.IsMod(G("human:hair:h0105:c0801", "chara/human/c0801/skeleton/hair/h0105/phy_c0801h0105.phyb")));
+        Assert.True(ItemModGrouper.IsMod(G("human:hair:h0105:c0801", "chara/human/c0801/skeleton/hair/h0105/phy_c0801h0105.phyb")));
+        Assert.False(ItemModGrouper.IsMod(G("shared:other", "shader/sm5/shpk/skin.shpk")));
         Assert.True(ItemModGrouper.IsMod(G("human:hair:h0105:c0801", "chara/human/c0801/obj/hair/h0105/model/c0801h0105_hir.mdl")));
         Assert.False(ItemModGrouper.IsMod(G("shared:vfx", "vfx/common/texture/x.tex")));
         Assert.True(ItemModGrouper.IsMod(G("shared:vfx", "vfx/common/eff/x.avfx")));
         Assert.True(ItemModGrouper.IsMod(G("shared:emote:dance", "chara/human/c0801/animation/a0001/bt_common/emote/dance.pap")));
         Assert.False(ItemModGrouper.IsMod(G("shared:sounds", "sound/x.sklb")));
+    }
+
+    [Fact]
+    public void ReadsGamePathsNamedInsideFiles()
+    {
+        using var dir = new TempDir();
+        var tmb = Path.Combine(dir.Path, "a.tmb");
+        File.WriteAllBytes(tmb, [.. "TMLB\0\0"u8, .. "vfx/rdb/bld_ws_s25/eff/bld_ws25c2k1.avfx\0"u8, 0xff, .. "sound/vfx/weponskill/SE_Vfx_Wep_Rdb_ws25_c.scd\0"u8,
+            .. "C063 not a path"u8, .. "\u0001vfx/rdb/bld_ws_s25/eff/bld_ws25c2k1.avfx\0"u8]);
+        Assert.Equal(["vfx/rdb/bld_ws_s25/eff/bld_ws25c2k1.avfx", "sound/vfx/weponskill/se_vfx_wep_rdb_ws25_c.scd"], ItemModGrouper.ReadReferences(tmb));
+        Assert.Empty(ItemModGrouper.ReadReferences(Path.Combine(dir.Path, "missing.tmb")));
+    }
+
+    [Fact]
+    public void ModsKeepTheEffectsSoundsAndFilesTheyUse()
+    {
+        using var dir = new TempDir();
+        PackageFile Make(string name, byte[] content, params string[] gamePaths)
+        {
+            var path = Path.Combine(dir.Path, name);
+            File.WriteAllBytes(path, content);
+            return new PackageFile(path, name, gamePaths);
+        }
+
+        static byte[] Text(params string[] refs) => System.Text.Encoding.ASCII.GetBytes("\0" + string.Join("\0", refs) + "\0");
+        var groups = ItemModGrouper.Group([
+            Make("emote.pap", Text("vfx/emote_sp/phone/eff/phone.avfx", "sound/vfx/voice/mhmm.scd"), "chara/human/c0701/animation/a0001/bt_common/emote/j_pose03_loop.pap"),
+            Make("phone.avfx", Text("vfx/emote_sp/phone/texture/phone_d.atex"), "vfx/emote_sp/phone/eff/phone.avfx"),
+            Make("phone.atex", [1], "vfx/emote_sp/phone/texture/phone_d.atex"),
+            Make("mhmm.scd", [2], "sound/vfx/voice/mhmm.scd"),
+            Make("other.avfx", Text(), "vfx/common/eff/unrelated.avfx"),
+            Make("helm.mdl", [3], "chara/equipment/e0774/model/c0101e0774_met.mdl"),
+            Make("helm.avfx", Text(), "chara/equipment/e0774/vfx/eff/ve0001.avfx"),
+            Make("body.mtrl", ItemModGrouperTests.Material("chara/human/c0101/obj/body/b0001/texture/c0101b0001_d.tex"), "chara/human/c0101/obj/body/b0001/material/v0001/mt_c0101b0001_a.mtrl"),
+            Make("human.pbd", [4], "chara/xls/bonedeformer/human.pbd"),
+        ]);
+
+        var emote = Assert.Single(groups, g => g.Item.Key == "shared:emote:pose03");
+        Assert.Equal(["emote.pap", "mhmm.scd", "phone.atex", "phone.avfx"], emote.Files.Select(f => f.FileName));
+        var vfx = Assert.Single(groups, g => g.Item.Key == "shared:vfx");
+        Assert.Equal(["other.avfx"], vfx.Files.Select(f => f.FileName));
+        Assert.DoesNotContain(groups, g => g.Item.Key == "shared:sounds");
+        var helm = Assert.Single(groups, g => g.Item.Key == "equipment:e0774:met");
+        Assert.Equal(["helm.avfx", "helm.mdl"], helm.Files.Select(f => f.FileName));
+        Assert.DoesNotContain(groups, g => g.Item.Key.EndsWith(":any", StringComparison.Ordinal));
+        var body = Assert.Single(groups, g => g.Item.Key == "human:body:b0001:c0101");
+        Assert.Contains(body.Files, f => f.FileName == "human.pbd");
+        Assert.DoesNotContain(groups, g => g.Item.Key == ItemModGrouper.DeformKey);
     }
 
     [Fact]

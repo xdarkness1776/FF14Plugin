@@ -2,6 +2,11 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.3.3.0: mods keep their own files. The exporter reads the file names stored inside materials, animation timelines,
+animations and effects, so emotes and battle animations keep their VFX and sounds, gear keeps its own effects,
+custom textures stay with the material that uses them, and the body deformer goes with body mods. Skeleton and
+physics edits count as mods.
+
 0.3.2.0: proper categories. Item mods are sorted into Gear, Accessories, Weapons, Character (Body, Hair, Face, Eyes,
 Face paint, Skin, Ears, Tail), Animations (one mod per emote; idle and movement; battle), VFX, Sounds, and Minions and
 mounts. Skeleton and physics files go with the hair, face, body or gear piece they belong to. Files that are not a mod
