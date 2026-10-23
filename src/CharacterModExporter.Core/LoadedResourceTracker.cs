@@ -123,8 +123,10 @@ public static class PenumbraResolution
     /// <param name="handledByPlayerSync">Whether stock PlayerSync handles this character; null when PlayerSync is not loaded.</param>
     /// <param name="files">Local file to the game paths it replaces (from <see cref="LoadedResourceTracker.Snapshot"/>).</param>
     /// <param name="hashes">SHA-1 cache for files whose name is not already their hash (your own Penumbra mods).</param>
+    /// <param name="vanilla">Leaves out files identical to the game's own; null keeps them.</param>
     public static CharacterResolution Build(string playerName, bool? handledByPlayerSync, IReadOnlyDictionary<string, List<string>> files,
-        string? cacheFolder, string? penumbraFolder, FileVerificationCache hashes, DateTimeOffset lastChangeUtc, DateTimeOffset now)
+        string? cacheFolder, string? penumbraFolder, FileVerificationCache hashes, DateTimeOffset lastChangeUtc, DateTimeOffset now,
+        VanillaFileComparer? vanilla = null)
     {
         var map = new Dictionary<string, ResolvedFile>(StringComparer.OrdinalIgnoreCase);
         var state = new CharacterStateDto { PlayerName = playerName, LinkDetailsKnown = false };
@@ -147,6 +149,7 @@ public static class PenumbraResolution
             state.Notes.Add("PlayerSync's cache folder could not be found (is it set in PlayerSync's settings?), so its files cannot be listed.");
 
         var other = 0;
+        var unchanged = 0;
         foreach (var (path, gamePaths) in files.OrderBy(kv => kv.Value.FirstOrDefault(), StringComparer.Ordinal))
         {
             var kind = ResourceResolver.Classify(path, cacheFolder, penumbraFolder);
@@ -169,6 +172,12 @@ public static class PenumbraResolution
             // PlayerSync names cache files by the SHA-1 of their content; the copy verifies it again.
             var hash = kind == SourceKind.PlayerSyncCache && ExportPathPolicy.IsSha1Hex(stem) ? stem.ToUpperInvariant()
                 : fi.Exists ? hashes.GetSha1(fi.FullName) : null;
+            if (hash != null && fi.Exists && vanilla != null && vanilla.IsUnchanged(hash, fi.FullName, gamePaths))
+            {
+                unchanged++;
+                continue;
+            }
+
             dto.Hash = hash;
             dto.CacheHash = hash;
             if (fi.Exists && ext != null && hash != null)
@@ -186,6 +195,8 @@ public static class PenumbraResolution
             state.Resources.Add(dto);
         }
 
+        if (unchanged > 0)
+            state.Notes.Add($"{unchanged} synced file(s) are identical to the game's own files (mods often ship unchanged copies) and are not offered.");
         if (other > 0)
             state.Notes.Add($"{other} loaded file(s) come from neither PlayerSync's cache nor your Penumbra mod folder and are not offered.");
 
@@ -194,7 +205,7 @@ public static class PenumbraResolution
             : now - lastChangeUtc < SettleTime ? SyncState.InProgress
             : state.Resources.Exists(r => r.Availability != ResourceAvailability.Available) ? SyncState.CompleteWithMissing
             : SyncState.Complete;
-        if (state.Resources.Count == 0)
+        if (state.Resources.Count == 0 && unchanged == 0)
             state.Notes.Add("No PlayerSync files are loaded for this character yet. PlayerSync may still be downloading; try again in a moment.");
         return new(state, map);
     }
@@ -223,6 +234,45 @@ public static class PlayerSyncConfigReader
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             return null;
+        }
+    }
+}
+
+/// <summary>
+/// Recognises files that only look modded: many mods ship unchanged copies of game files next to the ones they
+/// change, and PlayerSync syncs those too. A file counts as unchanged when, for every game path it replaces, the
+/// game's own file has exactly the same bytes.
+/// </summary>
+public sealed class VanillaFileComparer(Func<string, byte[]?> readGameFile)
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _results = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <param name="sha1">Upper-case SHA-1 of <paramref name="localFile"/>.</param>
+    public bool IsUnchanged(string sha1, string localFile, IReadOnlyCollection<string> gamePaths)
+    {
+        if (gamePaths.Count == 0) return false;
+        return _results.GetOrAdd(sha1 + "|" + string.Join("|", gamePaths.Order(StringComparer.Ordinal)), _ => Compare(sha1, localFile, gamePaths));
+    }
+
+    private bool Compare(string sha1, string localFile, IEnumerable<string> gamePaths)
+    {
+        try
+        {
+            var length = new FileInfo(localFile).Length;
+            foreach (var gamePath in gamePaths)
+            {
+                var original = readGameFile(gamePath);
+                if (original == null || original.Length != length) return false;
+                if (!string.Equals(Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(original)), sha1, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
+        }
+        catch (Exception)
+        {
+            // Unreadable on either side: keep the file rather than drop something that may be modded.
+            return false;
         }
     }
 }

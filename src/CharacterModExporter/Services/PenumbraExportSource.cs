@@ -15,7 +15,7 @@ namespace CharacterModExporter.Services;
 /// Works with stock PlayerSync. PlayerSync applies a synced character's files through a Penumbra temporary
 /// collection, so Penumbra knows which local file stands behind each of the character's game paths. This source
 /// reads that (on-screen resources plus every redirection Penumbra reports while the window is open), keeps
-/// only files from PlayerSync's cache or the user's Penumbra mod folder, and copies them with the same verified
+/// only files from PlayerSync's cache or the user's Penumbra mod folder that differ from the game's own files, and copies them with the same verified
 /// job runner the PlayerSync IPC uses. It never downloads anything and never writes to PlayerSync or Penumbra.
 /// </summary>
 public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
@@ -37,10 +37,12 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     private readonly ConcurrentDictionary<nint, Watched> _byAddress = new();
     private readonly FileVerificationCache _hashes = new();
     private readonly ExportJobRegistry _jobs;
+    private readonly VanillaFileComparer _vanilla;
 
     public PenumbraExportSource(IDalamudPluginInterface pi, IObjectTable objects, IFramework framework, IPluginLog log,
-        PlayerSyncIpcClient playerSync, Func<IEnumerable<string?>> forbiddenRoots)
+        PlayerSyncIpcClient playerSync, Func<IEnumerable<string?>> forbiddenRoots, VanillaFileComparer vanilla)
     {
+        _vanilla = vanilla;
         _pi = pi;
         _objects = objects;
         _framework = framework;
@@ -109,7 +111,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
 
         var tracker = _watched[entityId].Tracker;
         return PenumbraResolution.Build(info.Name, info.Handled, tracker.Snapshot(), CacheFolder(), ModDirectory(), _hashes,
-            tracker.LastChangeUtc, DateTimeOffset.UtcNow);
+            tracker.LastChangeUtc, DateTimeOffset.UtcNow, _vanilla);
     }
 
     private sealed record Captured(string Name, int ObjectIndex, bool? Handled);

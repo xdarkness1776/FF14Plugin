@@ -30,6 +30,9 @@ page). CI runs keep it as the `packages` artifact.
      downloads anything; files PlayerSync has not downloaded yet cannot be listed.
    * Only files from PlayerSync's cache folder (read from PlayerSync's settings, never changed) or from your own
      Penumbra mod folder are offered.
+   * Only modded files are offered. Mods often ship unchanged copies of game files, and PlayerSync syncs those too;
+     a file whose bytes are identical to the game's own file at every path it replaces is left out (the window's
+     notes say how many).
 4. Pick files (all available files are preselected) → **Export Selected**. The window waits until no new files have
    appeared for about 5 seconds, copies and verifies the files, and writes `Manifest.json` and `README.txt`.
 5. **Open Character Folder** shows the result:
