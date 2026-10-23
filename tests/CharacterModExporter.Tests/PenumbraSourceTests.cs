@@ -36,7 +36,12 @@ public sealed class FakePenumbraSource : IPlayerSyncExportApi, IDisposable
     public (ProviderStatus Status, int Version) Probe() => (ProviderStatus.Available, 0);
 
     public CharacterResolution Resolve(uint entityId)
-        => PenumbraResolution.Build(Name, Handled, Tracker.Snapshot(), CacheFolder, ModFolder, _hashes, Tracker.LastChangeUtc, Now);
+        => PenumbraResolution.Build(Name, Handled, Tracker.Snapshot(), CacheFolder, ModFolder, _hashes, Tracker.LastChangeUtc, Now, Vanilla);
+
+    /// <summary>Stands in for the game's own files.</summary>
+    public Dictionary<string, byte[]> GameFiles { get; } = new(StringComparer.Ordinal);
+    public VanillaFileComparer Vanilla => _vanilla ??= new VanillaFileComparer(p => GameFiles.GetValueOrDefault(p));
+    private VanillaFileComparer? _vanilla;
 
     public CharacterStateDto GetCharacterState(uint entityId) => Resolve(entityId).State;
 
@@ -187,6 +192,50 @@ public class PenumbraResolutionTests
         var state = src.Resolve(1).State;
         Assert.Equal(SyncState.CompleteWithMissing, state.SyncState);
         Assert.Equal(ResourceAvailability.Missing, state.Resources.Single().Availability);
+    }
+}
+
+public class VanillaFilterTests
+{
+    [Fact]
+    public void LeavesOutFilesIdenticalToTheGamesOwn()
+    {
+        using var dir = new TempDir();
+        using var src = new FakePenumbraSource(dir);
+        var copy = src.AddCacheFile("tex", "vanilla texture");
+        var changed = src.AddCacheFile("mdl", "modded model");
+        var newFile = src.AddCacheFile("tex", "custom texture");
+        var shared = src.AddCacheFile("mtrl", "vanilla material");
+        src.GameFiles["chara/equipment/e0001/texture/v01_c0101e0001_top_d.tex"] = Encoding.UTF8.GetBytes("vanilla texture");
+        src.GameFiles["chara/equipment/e0001/model/c0101e0001_top.mdl"] = Encoding.UTF8.GetBytes("original model");
+        src.GameFiles["chara/equipment/e0001/material/v0001/mt_c0101e0001_top_a.mtrl"] = Encoding.UTF8.GetBytes("vanilla material");
+        src.Tracker.Record("chara/equipment/e0001/texture/v01_c0101e0001_top_d.tex", copy);
+        src.Tracker.Record("chara/equipment/e0001/model/c0101e0001_top.mdl", changed);
+        src.Tracker.Record("chara/common/texture/custom.tex", newFile);
+        // Identical for one path but used for another path the game has no such file at: it is a real change.
+        src.Tracker.Record("chara/equipment/e0001/material/v0001/mt_c0101e0001_top_a.mtrl", shared);
+        src.Tracker.Record("chara/equipment/e0002/material/v0001/mt_c0101e0002_top_a.mtrl", shared);
+        src.Settle();
+
+        var state = src.Resolve(1).State;
+
+        Assert.Equal(3, state.Resources.Count);
+        Assert.DoesNotContain(state.Resources, r => r.GamePaths.Contains("chara/equipment/e0001/texture/v01_c0101e0001_top_d.tex"));
+        Assert.Contains(state.Notes, n => n.StartsWith("1 synced file(s) are identical to the game's own files", StringComparison.Ordinal));
+        Assert.Equal(SyncState.Complete, state.SyncState);
+    }
+
+    [Fact]
+    public void UnreadableGameFileKeepsTheFile()
+    {
+        using var dir = new TempDir();
+        var file = Path.Combine(dir.Path, "a.tex");
+        File.WriteAllText(file, "x");
+        var hash = Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(file)));
+        var comparer = new VanillaFileComparer(_ => throw new IOException("locked"));
+        Assert.False(comparer.IsUnchanged(hash, file, ["chara/a.tex"]));
+        Assert.False(new VanillaFileComparer(_ => File.ReadAllBytes(file)).IsUnchanged(hash, file, []));
+        Assert.True(new VanillaFileComparer(_ => File.ReadAllBytes(file)).IsUnchanged(hash, file, ["chara/a.tex"]));
     }
 }
 

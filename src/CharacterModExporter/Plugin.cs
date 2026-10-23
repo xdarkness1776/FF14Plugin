@@ -45,7 +45,8 @@ public sealed class Plugin : IDalamudPlugin
         _ipc = new PlayerSyncIpcClient(PluginInterface, Log);
         _penumbraModDirectory = PluginInterface.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         _folders = new ExportFolderService(ForbiddenRoots);
-        _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, Log, _ipc, ForbiddenRoots);
+        var vanilla = new VanillaFileComparer(gamePath => Data.FileExists(gamePath) ? Data.GetFile(gamePath)?.Data : null);
+        _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, Log, _ipc, ForbiddenRoots, vanilla);
         _source = new ExportSourceRouter(_ipc, _penumbra);
         var itemNames = new ItemNameService(Data, Log);
         _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString(), itemNames: itemNames.Resolve);

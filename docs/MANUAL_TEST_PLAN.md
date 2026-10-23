@@ -25,6 +25,7 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 16 | Package import | Penumbra → Import Mod the .pmp; enable on A in a test collection | Import succeeds; items look like B's (minus meta manipulations). |
 | 16a | Item mods | Open `Mods\` after an export; import one gear `.pmp` and one hair `.pmp` | One folder per category; names show the item and what it supports; each imports and changes only that item. |
 | 16b | Supports | Export a character wearing a body mod made for Bibo+/Gen3 | Body mod name and description name the body type and races; tags show them in Penumbra. |
+| 16c | Only modded files | Export a character wearing a mod that ships unchanged game files | Notes say N files are identical to the game's own; those are not in Assets or any .pmp. |
 | 17 | Leaving / despawn | Start export, B teleports away | Job fails "no longer available"; window still usable. |
 | 18 | Cancel | Export a large character, Cancel Export | Phase Cancelled; no `.cmx-partial` files left. |
 | 19 | Unload | `/xlplugins` disable exporter mid-export | No exception spam; partial files cleaned. |
