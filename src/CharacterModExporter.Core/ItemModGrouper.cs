@@ -153,15 +153,20 @@ public static partial class ItemModGrouper
         if (p.EndsWith(".pap", StringComparison.Ordinal) || p.EndsWith(".tmb", StringComparison.Ordinal) || p.Contains("/animation/", StringComparison.Ordinal)
             || p.StartsWith("chara/action/", StringComparison.Ordinal))
             return Animation(p);
-        if (p.StartsWith("vfx/", StringComparison.Ordinal) || p.EndsWith(".avfx", StringComparison.Ordinal) || p.EndsWith(".atex", StringComparison.Ordinal))
-            return new("shared:vfx", "VFX", string.Empty);
-        if (p.StartsWith("sound/", StringComparison.Ordinal) || p.EndsWith(".scd", StringComparison.Ordinal))
-            return new("shared:sounds", "Sounds", string.Empty);
-
+        // Gear and accessories keep their own effects (chara/equipment/e0774/vfx/...).
         var m = Equipment().Match(p);
         if (m.Success) return Gear("equipment", "e", m.Groups[1].Value, p);
         m = Accessory().Match(p);
         if (m.Success) return Gear("accessory", "a", m.Groups[1].Value, p);
+
+        if (p.StartsWith("vfx/", StringComparison.Ordinal) || ((p.EndsWith(".avfx", StringComparison.Ordinal) || p.EndsWith(".atex", StringComparison.Ordinal))
+            && !p.StartsWith("chara/weapon/", StringComparison.Ordinal) && !p.StartsWith("chara/monster/", StringComparison.Ordinal) && !p.StartsWith("chara/demihuman/", StringComparison.Ordinal)))
+            return new("shared:vfx", "VFX", string.Empty);
+        if (p.StartsWith("sound/", StringComparison.Ordinal) || p.EndsWith(".scd", StringComparison.Ordinal))
+            return new("shared:sounds", "Sounds", string.Empty);
+        if (p.StartsWith("chara/xls/", StringComparison.Ordinal))
+            // Bone deformers and attach offsets come with body mods.
+            return new(DeformKey, "Body mod", "deformer");
 
         m = Weapon().Match(p);
         if (m.Success)
@@ -203,10 +208,12 @@ public static partial class ItemModGrouper
             return new($"{m.Groups[1].Value}:{code}", "Minion or mount", code);
         }
 
-        return new(OtherKey, "Other files", string.Empty);
+        return Other;
     }
 
     public const string OtherKey = "shared:other";
+    public const string DeformKey = "common:deform";
+    private static readonly ItemKey Other = new(OtherKey, "Other files", string.Empty);
 
     private static ItemKey Human(string part, string code, string race)
         // Hair, faces, tails and ears are usually modded for one race and gender at a time.
@@ -290,28 +297,63 @@ public static partial class ItemModGrouper
             }
         }
 
-        // Textures used by an item's materials belong to that item, wherever they are stored.
+        // Files name the files they use: materials their textures, animation timelines (.tmb) and animations their
+        // effects and sounds, effects their textures. A referenced effect, sound or loose file belongs to the mod that
+        // uses it, so emotes keep their VFX and sounds, gear keeps its effects, and custom textures stay with their
+        // material. Followed transitively; a file used by several mods goes into each of them.
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (_, group) in byKey.Where(kv => !kv.Value.Item.IsShared).ToList())
+        var references = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        List<string> RefsOf(PackageFile f)
         {
-            foreach (var (file, paths) in group.Files.Values.ToList())
+            if (!references.TryGetValue(f.SourcePath, out var refs))
+                references[f.SourcePath] = refs = f.GamePaths.Any(g => g.EndsWith(".mtrl", StringComparison.OrdinalIgnoreCase))
+                    ? ReadMaterialTextures(f.SourcePath)
+                    : ReadReferences(f.SourcePath);
+            return refs;
+        }
+
+        foreach (var (_, group) in byKey.Where(kv => !IsClaimable(kv.Value.Item.Key)).OrderBy(kv => kv.Value.Item.IsShared).ToList())
+        {
+            var queue = new Queue<PackageFile>(group.Files.Values.Select(e => e.File));
+            var seen = new HashSet<string>(group.Files.Keys, StringComparer.Ordinal);
+            while (queue.Count > 0)
             {
-                if (!paths.Any(p => p.EndsWith(".mtrl", StringComparison.Ordinal))) continue;
-                foreach (var texture in ReadMaterialTextures(file.SourcePath))
+                foreach (var reference in RefsOf(queue.Dequeue()))
                 {
-                    var tp = PenumbraPackageBuilder.NormalizeGamePath(texture);
-                    if (tp == null || !fileByGamePath.TryGetValue(tp, out var texFile)) continue;
-                    Add(group.Item, texFile, tp);
-                    claimed.Add(tp);
+                    var rp = PenumbraPackageBuilder.NormalizeGamePath(reference);
+                    if (rp == null || !fileByGamePath.TryGetValue(rp, out var used)) continue;
+                    var owner = Classify(rp).Key;
+                    if (owner != group.Item.Key && !IsClaimable(owner)) continue;
+                    Add(group.Item, used, rp);
+                    if (owner != group.Item.Key) claimed.Add(rp);
+                    if (seen.Add(used.FileName)) queue.Enqueue(used);
                 }
             }
         }
 
-        // A texture claimed by a material no longer needs to sit in a shared group on its own.
-        foreach (var (_, group) in byKey.Where(kv => kv.Value.Item.IsShared))
+        // Claimed files no longer need to sit in a shared group on their own.
+        foreach (var (_, group) in byKey.Where(kv => IsClaimable(kv.Value.Item.Key)))
         {
             foreach (var entry in group.Files.Values) entry.Paths.ExceptWith(claimed);
             foreach (var name in group.Files.Where(kv => kv.Value.Paths.Count == 0).Select(kv => kv.Key).ToList()) group.Files.Remove(name);
+        }
+
+        // What is left of a gear set without a slot (its effects, for example) joins that set's gear piece.
+        foreach (var (key, any) in byKey.Where(kv => kv.Key.EndsWith(":any", StringComparison.Ordinal)).ToList())
+        {
+            var prefix = key[..^"any".Length];
+            var target = SlotOrder.Select(slot => prefix + slot).FirstOrDefault(byKey.ContainsKey);
+            if (target == null || any.Files.Count == 0) continue;
+            foreach (var (file, paths) in any.Files.Values) foreach (var gp in paths) Add(byKey[target].Item, file, gp);
+            byKey.Remove(key);
+        }
+
+        // Bone deformers go into every body mod; without one they stay a group of their own.
+        if (byKey.TryGetValue(DeformKey, out var deform) && byKey.Values.Any(g => g.Item.Key.StartsWith("human:body:", StringComparison.Ordinal)))
+        {
+            foreach (var body in byKey.Values.Where(g => g.Item.Key.StartsWith("human:body:", StringComparison.Ordinal)).ToList())
+                foreach (var (file, paths) in deform.Files.Values) foreach (var gp in paths) Add(body.Item, file, gp);
+            byKey.Remove(DeformKey);
         }
 
         return byKey.Values.Where(g => g.Files.Count > 0)
@@ -323,8 +365,58 @@ public static partial class ItemModGrouper
             .ToList();
     }
 
+    /// <summary>Groups whose files are taken over by the mod that references them.</summary>
+    /// Files of a gear set whose path names no slot (custom texture names, the set's effects) are claimable too.
+    private static bool IsClaimable(string key) => key is "shared:vfx" or "shared:sounds" or OtherKey
+        || key.StartsWith("common:", StringComparison.Ordinal) && key != DeformKey
+        || key.EndsWith(":any", StringComparison.Ordinal);
+
+    private static readonly string[] SlotOrder = ["met", "top", "glv", "dwn", "sho", "ear", "nek", "wrs", "rir", "ril"];
+
+    [GeneratedRegex(@"(?:chara|vfx|sound|bgcommon|bg|shader)/[a-z0-9_/.\-]+?\.(?:tex|atex|avfx|scd|pap|tmb|mtrl|mdl|sklb|phyb|shpk|eid|skp|pbd)(?![a-z0-9])")]
+    private static partial Regex GamePathText();
+
     /// <summary>
-    /// Whether a group is a mod on its own: an item needs a model, material or texture; animations a .pap or .tmb;
+    /// Game paths named inside a file (animation timelines, animations, effects and models store them as plain text).
+    /// Files over 64 MB and unreadable files yield nothing.
+    /// </summary>
+    public static List<string> ReadReferences(string path)
+    {
+        var result = new List<string>();
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length > 64L * 1024 * 1024) return result;
+            var data = File.ReadAllBytes(path);
+            var run = new StringBuilder();
+            void Flush()
+            {
+                if (run.Length >= 8)
+                    foreach (Match m in GamePathText().Matches(run.ToString().ToLowerInvariant()))
+                        if (!result.Contains(m.Value)) result.Add(m.Value);
+                run.Clear();
+            }
+
+            foreach (var b in data)
+            {
+                if (b is >= (byte)'a' and <= (byte)'z' or >= (byte)'A' and <= (byte)'Z' or >= (byte)'0' and <= (byte)'9' or (byte)'_' or (byte)'/' or (byte)'.' or (byte)'-')
+                    run.Append((char)b);
+                else
+                    Flush();
+            }
+
+            Flush();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Unreadable: nothing is pulled in, the path layout decides alone.
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Whether a group is a mod on its own: an item needs a model, material, texture, skeleton or physics file; animations a .pap or .tmb;
     /// VFX an .avfx or .atex; sounds an .scd. Files that fit no category (shaders, loose support files) are never one.
     /// </summary>
     public static bool IsMod(ItemGroup group)
@@ -336,7 +428,8 @@ public static partial class ItemModGrouper
             var k when k.StartsWith("shared:emote:", StringComparison.Ordinal) || k.StartsWith("shared:anim:", StringComparison.Ordinal) => [".pap", ".tmb"],
             "shared:vfx" => [".avfx", ".atex"],
             "shared:sounds" => [".scd"],
-            _ => [".mdl", ".mtrl", ".tex"],
+            DeformKey => [".pbd", ".atch"],
+            _ => [".mdl", ".mtrl", ".tex", ".sklb", ".phyb"],
         };
         return needed.Any(extensions.Contains);
     }

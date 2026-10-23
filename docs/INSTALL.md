@@ -60,7 +60,12 @@ page). CI runs keep it as the `packages` artifact.
    | `Animations\Idle and movement`, `Battle animations`, `Other animations` | one mod per kind |
    | `VFX`, `Sounds`, `Minions and mounts` | |
 
-   Only real mods get a folder: an item needs a model, material or texture; animations a `.pap` or `.tmb`; VFX an
+   Files stay with the mod that uses them. Materials name their textures, animation timelines (`.tmb`) and
+   animations name their effects and sounds, and effects name their textures. The exporter reads those names, so an
+   emote keeps its VFX and sounds, gear keeps its own effects, custom textures stay with their material, and the
+   body deformer (`human.pbd`) goes with body mods. Only effects and sounds nothing refers to end up in `VFX` and `Sounds`.
+
+   Only real mods get a folder: an item needs a model, material, texture, skeleton or physics file; animations a `.pap` or `.tmb`; VFX an
    `.avfx` or `.atex`; sounds an `.scd`. Files that are not a mod on their own (shaders, loose support files) get no
    mod and no category; the manifest lists them, and they stay in `Assets` and the full-character package.
    * Gear is named after the game item it replaces when the item list knows the model, e.g.
