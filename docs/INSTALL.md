@@ -8,7 +8,8 @@ Two plugins are needed:
 2. **Character Mod Exporter**, installed from this project's custom repository.
 
 Both zips are attached to every GitHub release of this repository (the Release workflow builds, tests and attaches
-them when a tag `v<version>` is pushed). CI runs also keep them as the `packages` artifact.
+them when a tag `v<version>` is pushed, or when a release with a new tag `v<version>` is published from GitHub's
+Releases page). CI runs also keep them as the `packages` artifact.
 
 ## 1. Patched PlayerSync (dev plugin)
 
