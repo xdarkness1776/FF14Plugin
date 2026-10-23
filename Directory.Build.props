@@ -1,9 +1,13 @@
 <Project>
-  <PropertyGroup>
+  <!-- Only this repository's own projects. playersync-fork/apply.sh checks PlayerSync out under build/, and
+       upstream does not compile with these settings (ImplicitUsings makes several type names ambiguous). -->
+  <PropertyGroup Condition="!$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').Replace('\', '/').StartsWith('build/'))">
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup>
     <!-- Single source of truth for the exporter version; the plugin manifest, release tag and repo.json use it. -->
     <ExporterVersion>0.1.0.0</ExporterVersion>
   </PropertyGroup>
