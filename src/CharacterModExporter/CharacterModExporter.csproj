@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>$(ExporterVersion)</Version>
+    <AssemblyName>CharacterModExporter</AssemblyName>
+    <!-- Manifest fields consumed by DalamudPackager -->
+    <Author>xdarkness1776</Author>
+    <Name>Character Mod Exporter</Name>
+    <Punchline>Export the mod files PlayerSync applied to another character into a folder you choose.</Punchline>
+    <Description>Right-click a player that PlayerSync is syncing (ZoneSync, syncshell or direct pair) and choose "Export Character Mods". The exporter waits for PlayerSync to finish synchronizing, then copies that character's resolved files from PlayerSync's cache into a folder you choose, with a manifest, a report and, when the mapping is complete, a Penumbra mod package for manual import.
+
+Requires a PlayerSync build with the export IPC (see the project README). It does not work with stock PlayerSync.</Description>
+    <RepoUrl>https://github.com/xdarkness1776/FF14Plugin</RepoUrl>
+    <Tags>playersync;penumbra;export;mods</Tags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CharacterModExporter.Core\CharacterModExporter.Core.csproj" />
+    <ProjectReference Include="..\PlayerSyncExport.Contracts\PlayerSyncExport.Contracts.csproj" />
+  </ItemGroup>
+</Project>

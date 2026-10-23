@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  DALAMUD_HOME: /home/runner/.xlcore/dalamud/Hooks/dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # 10.0 builds everything; 9.0 is needed by a code generator (FlatSharp) inside PlayerSync's VFXEditor submodule.
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Download Dalamud development assemblies
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/dalamud.zip" https://github.com/goatcorp/dalamud-distrib/raw/refs/heads/main/latest.zip
+          mkdir -p "$DALAMUD_HOME"
+          unzip -q "$RUNNER_TEMP/dalamud.zip" -d "$DALAMUD_HOME"
+
+      - name: Build (Release)
+        run: dotnet build FF14Plugin.slnx -c Release -p:EnableWindowsTargeting=true
+
+      - name: Test
+        run: |
+          dotnet test tests/CharacterModExporter.Tests -c Release --no-build --logger "trx;LogFileName=unit.trx"
+          dotnet test tests/CharacterModExporter.PenumbraCompatTests -c Release --no-build --logger "trx;LogFileName=compat.trx"
+
+      - name: Verify plugin package
+        run: |
+          version=$(sed -n 's:.*<ExporterVersion>\(.*\)</ExporterVersion>.*:\1:p' Directory.Build.props)
+          python3 tools/check_package.py src/CharacterModExporter/bin/Release/CharacterModExporter/latest.zip CharacterModExporter "$version"
+          python3 tools/make_repo_json.py build "$RUNNER_TEMP/repo.json" "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version" \
+            src/CharacterModExporter/bin/Release/CharacterModExporter/latest.zip=CharacterModExporter.zip
+          python3 tools/make_repo_json.py validate "$RUNNER_TEMP/repo.json" src/CharacterModExporter/bin/Release/CharacterModExporter/latest.zip
+          if [ -f repo.json ]; then python3 tools/make_repo_json.py validate repo.json; fi
+
+      - name: Build patched PlayerSync (export IPC)
+        run: |
+          playersync-fork/apply.sh build/PlayerSync
+          dotnet build build/PlayerSync/PlayerSync/PlayerSync.csproj -c Release -p:EnableWindowsTargeting=true
+          version=$(sed -n 's/^version=//p' playersync-fork/UPSTREAM)
+          python3 tools/check_package.py build/PlayerSync/PlayerSync/bin/Release/MareSempiterne/latest.zip MareSempiterne "$version"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            src/CharacterModExporter/bin/Release/CharacterModExporter/latest.zip
+            build/PlayerSync/PlayerSync/bin/Release/MareSempiterne/latest.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: tests/**/TestResults/*.trx

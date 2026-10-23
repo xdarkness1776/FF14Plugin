@@ -1,0 +1,216 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace PlayerSyncExport.Contracts;
+
+/// <summary>Result of looking up a game object in PlayerSync.</summary>
+public enum CharacterLookup
+{
+    /// <summary>The character is handled by PlayerSync and visible.</summary>
+    Found,
+    /// <summary>PlayerSync is not connected to its server.</summary>
+    NotConnected,
+    /// <summary>No PlayerSync pair (direct, syncshell or ZoneSync) is attached to this game object.</summary>
+    NotSynced,
+    /// <summary>The pair exists but is paused.</summary>
+    Paused,
+}
+
+/// <summary>Synchronization state of a character as PlayerSync sees it.</summary>
+public enum SyncState
+{
+    /// <summary>PlayerSync has not received character data for this pair yet.</summary>
+    NoData,
+    /// <summary>Data was received but has not been applied (deferred, paused by thresholds, combat, etc.).</summary>
+    NotApplied,
+    /// <summary>A download or application task is running.</summary>
+    InProgress,
+    /// <summary>The last applied data is older than the last received data.</summary>
+    Stale,
+    /// <summary>The last received data is applied and every file resolved to a local file.</summary>
+    Complete,
+    /// <summary>The last received data is applied but some files are missing or were excluded.</summary>
+    CompleteWithMissing,
+}
+
+/// <summary>How a single resource of the character resolved.</summary>
+public enum ResourceAvailability
+{
+    /// <summary>A local file exists for the resource.</summary>
+    Available,
+    /// <summary>PlayerSync could not obtain the file (download failed, forbidden, not yet downloaded).</summary>
+    Missing,
+    /// <summary>PlayerSync's file validation excluded the file because it could crash the game.</summary>
+    ExcludedByValidation,
+    /// <summary>The resource is a redirect to another game path; there is no file to copy.</summary>
+    FileSwap,
+}
+
+/// <summary>Where the resolved local file lives.</summary>
+public enum SourceKind
+{
+    None,
+    PlayerSyncCache,
+    PenumbraModDirectory,
+    Other,
+}
+
+public sealed class CharacterStateDto
+{
+    public int ApiVersion { get; set; } = ExportIpc.ApiVersion;
+    public CharacterLookup Lookup { get; set; }
+    public string? PlayerName { get; set; }
+
+    /// <summary>True when the user has an individual (direct) pair with the character.</summary>
+    public bool IsDirectlyPaired { get; set; }
+
+    /// <summary>True when the only connection to the character is a ZoneSync group.</summary>
+    public bool IsZoneSyncOnly { get; set; }
+
+    /// <summary>True when at least one of the shared groups is a ZoneSync group.</summary>
+    public bool SharesZoneSyncGroup { get; set; }
+
+    public bool ZoneSyncEnabled { get; set; }
+    public SyncState SyncState { get; set; }
+    public string? ReceivedDataHash { get; set; }
+    public string? AppliedDataHash { get; set; }
+    public DateTimeOffset? AppliedAtUtc { get; set; }
+
+    /// <summary>True when the received data contains Penumbra meta manipulations. They are not exported.</summary>
+    public bool HasManipulations { get; set; }
+
+    public List<ResourceDto> Resources { get; set; } = [];
+
+    /// <summary>Human readable notes about filtering or limits that apply to this view.</summary>
+    public List<string> Notes { get; set; } = [];
+}
+
+public sealed class ResourceDto
+{
+    /// <summary>Player, MinionOrMount, Pet or Companion.</summary>
+    public string ObjectKind { get; set; } = string.Empty;
+
+    public List<string> GamePaths { get; set; } = [];
+
+    /// <summary>The hash PlayerSync received for this resource (SHA-1 of the file content, uppercase hex).</summary>
+    public string? Hash { get; set; }
+
+    /// <summary>
+    /// The hash of the file actually used locally. Differs from <see cref="Hash"/> when PlayerSync
+    /// substituted a compressed alternate texture.
+    /// </summary>
+    public string? CacheHash { get; set; }
+
+    public bool IsCompressedAlternate { get; set; }
+
+    /// <summary>For file swaps: the game path the resource is redirected to.</summary>
+    public string? FileSwapTarget { get; set; }
+
+    /// <summary>Extension of the cached file without the dot, lowercase.</summary>
+    public string Extension { get; set; } = string.Empty;
+
+    public long? Size { get; set; }
+    public ResourceAvailability Availability { get; set; }
+    public SourceKind SourceKind { get; set; }
+}
+
+public sealed class ExportRequestDto
+{
+    public int ApiVersion { get; set; } = ExportIpc.ApiVersion;
+    public uint EntityId { get; set; }
+
+    /// <summary>Name the exporter resolved for the entity; the provider rejects the job if it no longer matches.</summary>
+    public string ExpectedPlayerName { get; set; } = string.Empty;
+
+    /// <summary>Absolute directory the files are written into. Must already exist.</summary>
+    public string DestinationDirectory { get; set; } = string.Empty;
+
+    /// <summary>Cache hashes (see <see cref="ResourceDto.CacheHash"/>) to export.</summary>
+    public List<string> CacheHashes { get; set; } = [];
+
+    /// <summary>How long to wait for a running synchronization before giving up.</summary>
+    public int SyncWaitSeconds { get; set; } = 120;
+}
+
+public sealed class ExportStartResultDto
+{
+    public bool Accepted { get; set; }
+    public string? JobId { get; set; }
+    public string? Error { get; set; }
+}
+
+public enum ExportJobPhase
+{
+    Queued,
+    WaitingForSync,
+    Copying,
+    Completed,
+    CompletedWithIssues,
+    Failed,
+    Cancelled,
+}
+
+public enum FileExportOutcome
+{
+    Pending,
+    Copied,
+    AlreadyPresentIdentical,
+    NotInCharacterMapping,
+    SourceMissing,
+    IntegrityMismatch,
+    DestinationConflict,
+    Failed,
+    Cancelled,
+}
+
+public sealed class ExportFileResultDto
+{
+    public string CacheHash { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public FileExportOutcome Outcome { get; set; }
+    public string? Error { get; set; }
+    public long Size { get; set; }
+
+    /// <summary>True when the SHA-1 of the written file equals <see cref="CacheHash"/>.</summary>
+    public bool Sha1Verified { get; set; }
+
+    /// <summary>SHA-256 of the written file, computed by the exporter, recorded separately from PlayerSync's identifier.</summary>
+    public string? Sha256 { get; set; }
+}
+
+public sealed class ExportJobStatusDto
+{
+    public string JobId { get; set; } = string.Empty;
+    public bool Found { get; set; }
+    public ExportJobPhase Phase { get; set; }
+    public string? Message { get; set; }
+    public int FilesTotal { get; set; }
+    public int FilesDone { get; set; }
+    public long BytesTotal { get; set; }
+    public long BytesDone { get; set; }
+    public List<ExportFileResultDto> Files { get; set; } = [];
+
+    /// <summary>The character state the job exported from (taken once synchronization finished).</summary>
+    public CharacterStateDto? State { get; set; }
+
+    [JsonIgnore]
+    public bool IsFinished => Phase is ExportJobPhase.Completed or ExportJobPhase.CompletedWithIssues
+        or ExportJobPhase.Failed or ExportJobPhase.Cancelled;
+}
+
+public static class ExportJson
+{
+    public static readonly JsonSerializerOptions Options = new()
+    {
+        Converters = { new JsonStringEnumConverter() },
+        WriteIndented = false,
+    };
+
+    public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Options);
+
+    public static T? Deserialize<T>(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return default;
+        return JsonSerializer.Deserialize<T>(json, Options);
+    }
+}

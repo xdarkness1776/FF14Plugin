@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Single source of truth for the exporter version; the plugin manifest, release tag and repo.json use it. -->
+    <ExporterVersion>0.1.0.0</ExporterVersion>
+  </PropertyGroup>
+</Project>

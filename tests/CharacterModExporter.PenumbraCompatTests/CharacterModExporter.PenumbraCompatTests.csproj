@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Checks generated packages with Penumbra's own path parsing (Penumbra.String, the library Penumbra's
+    mod loader uses for game paths and relative paths). Windows TFM because that package only ships for it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Penumbra.String" Version="1.0.8" />
+  </ItemGroup>
+  <PropertyGroup>
+    <!-- Penumbra.String needs Lumina, which Dalamud ships. Same locations the Dalamud SDK uses. -->
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == '' and '$(DALAMUD_HOME)' != ''">$(DALAMUD_HOME)/</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == '' and '$(OS)' == 'Windows_NT'">$(APPDATA)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">$(HOME)/.xlcore/dalamud/Hooks/dev/</DalamudLibPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Lumina">
+      <HintPath>$(DalamudLibPath)Lumina.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CharacterModExporter.Core\CharacterModExporter.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+</Project>

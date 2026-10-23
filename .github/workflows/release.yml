@@ -1,0 +1,99 @@
+name: Release
+
+# Push a tag v<ExporterVersion> (for example v0.1.0.0) to publish.
+# The release is created only after build, tests and package checks pass, and repo.json is updated only
+# after the uploaded zip is downloadable without authentication.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  DALAMUD_HOME: /home/runner/.xlcore/dalamud/Hooks/dev
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Check tag matches version
+        id: version
+        run: |
+          version=$(sed -n 's:.*<ExporterVersion>\(.*\)</ExporterVersion>.*:\1:p' Directory.Build.props)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match ExporterVersion $version in Directory.Build.props"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download Dalamud development assemblies
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/dalamud.zip" https://github.com/goatcorp/dalamud-distrib/raw/refs/heads/main/latest.zip
+          mkdir -p "$DALAMUD_HOME"
+          unzip -q "$RUNNER_TEMP/dalamud.zip" -d "$DALAMUD_HOME"
+
+      - name: Build and test
+        run: |
+          dotnet build FF14Plugin.slnx -c Release -p:EnableWindowsTargeting=true
+          dotnet test tests/CharacterModExporter.Tests -c Release --no-build
+          dotnet test tests/CharacterModExporter.PenumbraCompatTests -c Release --no-build
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp src/CharacterModExporter/bin/Release/CharacterModExporter/latest.zip dist/CharacterModExporter.zip
+          python3 tools/check_package.py dist/CharacterModExporter.zip CharacterModExporter "${{ steps.version.outputs.version }}"
+
+      - name: Build patched PlayerSync
+        if: vars.PUBLISH_PATCHED_PLAYERSYNC != 'false'
+        run: |
+          playersync-fork/apply.sh build/PlayerSync
+          dotnet build build/PlayerSync/PlayerSync/PlayerSync.csproj -c Release -p:EnableWindowsTargeting=true
+          version=$(sed -n 's/^version=//p' playersync-fork/UPSTREAM)
+          cp build/PlayerSync/PlayerSync/bin/Release/MareSempiterne/latest.zip dist/PlayerSync-ExportIPC.zip
+          python3 tools/check_package.py dist/PlayerSync-ExportIPC.zip MareSempiterne "$version"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --title "Character Mod Exporter $GITHUB_REF_NAME" \
+            --notes-file docs/RELEASE_NOTES.md --verify-tag
+
+      - name: Update repo.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = "true" ]; then
+            echo "::warning::The repository is private, so XIVLauncher cannot download the release. repo.json was not updated."
+            exit 0
+          fi
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          git fetch origin main
+          git checkout -B repo-json-update origin/main
+          # Only the exporter is listed. The patched PlayerSync shares the official plugin identity (MareSempiterne),
+          # so listing it would create a duplicate identity next to the official repository; it ships as a release asset.
+          python3 tools/make_repo_json.py build repo.json "$base" dist/CharacterModExporter.zip=CharacterModExporter.zip
+          python3 tools/make_repo_json.py validate repo.json dist/CharacterModExporter.zip
+          # Must be downloadable without credentials before we advertise it.
+          for asset in $(python3 -c "import json;print(' '.join(e['DownloadLinkInstall'] for e in json.load(open('repo.json'))))"); do
+            curl -fsSLI --retry 5 --retry-delay 5 "$asset" > /dev/null
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo.json
+          git commit -m "Update repo.json for $GITHUB_REF_NAME"
+          git push origin HEAD:main

@@ -1,0 +1,366 @@
+diff --git a/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs b/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs
+new file mode 100644
+index 0000000..b0fdc94
+--- /dev/null
++++ b/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs
+@@ -0,0 +1,200 @@
++using Dalamud.Plugin;
++using Dalamud.Plugin.Ipc;
++using MareSynchronos.API.Data;
++using MareSynchronos.FileCache;
++using MareSynchronos.Interop.Ipc;
++using MareSynchronos.MareConfiguration;
++using MareSynchronos.PlayerData.Pairs;
++using MareSynchronos.Services;
++using MareSynchronos.WebAPI;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using PlayerSyncExport.Contracts;
++
++namespace PlayerSync.Interop.Ipc.Export;
++
++/// <summary>
++/// Export IPC (see <see cref="ExportIpc"/>). Lets a separate exporter plugin read the live,
++/// already-resolved resource mapping of a character PlayerSync is syncing (directly, through a
++/// syncshell or through ZoneSync) and copy those files into a folder the user chose.
++///
++/// It never downloads on its own, never pairs, and never writes to the cache or its index:
++/// the mapping comes from <see cref="MareSynchronos.PlayerData.Handlers.PairHandler.ExportSnapshot"/>,
++/// and a resync goes through the same "reapply last received data" path as the context menu.
++/// Request validation, waiting and copying live in <see cref="ExportJobRegistry"/> (shared with the exporter's tests).
++/// </summary>
++public sealed class ExportIpcProvider : IHostedService
++{
++    private readonly ILogger<ExportIpcProvider> _logger;
++    private readonly IDalamudPluginInterface _pi;
++    private readonly PairManager _pairManager;
++    private readonly ApiController _apiController;
++    private readonly FileCacheManager _fileCacheManager;
++    private readonly IpcManager _ipcManager;
++    private readonly DalamudUtilService _dalamudUtil;
++    private readonly ZoneSyncConfigService _zoneSyncConfig;
++    private readonly ExportJobRegistry _jobs;
++
++    private ICallGateProvider<int>? _getApiVersion;
++    private ICallGateProvider<uint, string>? _getCharacterState;
++    private ICallGateProvider<uint, bool>? _requestResync;
++    private ICallGateProvider<string, string>? _startExport;
++    private ICallGateProvider<string, string>? _getExportStatus;
++    private ICallGateProvider<string, bool>? _cancelExport;
++
++    public ExportIpcProvider(ILogger<ExportIpcProvider> logger, IDalamudPluginInterface pi, PairManager pairManager,
++        ApiController apiController, FileCacheManager fileCacheManager, IpcManager ipcManager,
++        DalamudUtilService dalamudUtil, ZoneSyncConfigService zoneSyncConfig)
++    {
++        _logger = logger;
++        _pi = pi;
++        _pairManager = pairManager;
++        _apiController = apiController;
++        _fileCacheManager = fileCacheManager;
++        _ipcManager = ipcManager;
++        _dalamudUtil = dalamudUtil;
++        _zoneSyncConfig = zoneSyncConfig;
++        _jobs = new ExportJobRegistry(Resolve, ForbiddenRoots, log: (ex, msg) => _logger.LogWarning(ex, "Export IPC: {msg}", msg));
++    }
++
++    public Task StartAsync(CancellationToken cancellationToken)
++    {
++        _getApiVersion = _pi.GetIpcProvider<int>(ExportIpc.GetApiVersion);
++        _getApiVersion.RegisterFunc(() => ExportIpc.ApiVersion);
++        _getCharacterState = _pi.GetIpcProvider<uint, string>(ExportIpc.GetCharacterState);
++        _getCharacterState.RegisterFunc(id => ExportJson.Serialize(Resolve(id).State));
++        _requestResync = _pi.GetIpcProvider<uint, bool>(ExportIpc.RequestResync);
++        _requestResync.RegisterFunc(RequestResync);
++        _startExport = _pi.GetIpcProvider<string, string>(ExportIpc.StartExport);
++        _startExport.RegisterFunc(json => ExportJson.Serialize(StartExport(json)));
++        _getExportStatus = _pi.GetIpcProvider<string, string>(ExportIpc.GetExportStatus);
++        _getExportStatus.RegisterFunc(id => ExportJson.Serialize(_jobs.GetStatus(id)));
++        _cancelExport = _pi.GetIpcProvider<string, bool>(ExportIpc.CancelExport);
++        _cancelExport.RegisterFunc(_jobs.Cancel);
++        _logger.LogInformation("Export IPC v{version} registered", ExportIpc.ApiVersion);
++        return Task.CompletedTask;
++    }
++
++    public Task StopAsync(CancellationToken cancellationToken)
++    {
++        _getApiVersion?.UnregisterFunc();
++        _getCharacterState?.UnregisterFunc();
++        _requestResync?.UnregisterFunc();
++        _startExport?.UnregisterFunc();
++        _getExportStatus?.UnregisterFunc();
++        _cancelExport?.UnregisterFunc();
++        _jobs.Dispose();
++        return Task.CompletedTask;
++    }
++
++    private ExportStartResultDto StartExport(string requestJson)
++    {
++        try
++        {
++            return _jobs.Start(ExportJson.Deserialize<ExportRequestDto>(requestJson));
++        }
++        catch (Exception ex)
++        {
++            return new() { Error = "Malformed export request: " + ex.Message };
++        }
++    }
++
++    private IEnumerable<string?> ForbiddenRoots()
++    {
++        yield return _fileCacheManager.CacheFolder;
++        yield return _ipcManager.Penumbra.ModDirectory;
++        yield return _pi.ConfigDirectory.Parent?.FullName;
++        yield return _pi.AssemblyLocation.Directory?.FullName;
++    }
++
++    private Pair? FindPair(uint entityId)
++    {
++        if (entityId is 0 or uint.MaxValue) return null;
++        // PlayerCharacterId dereferences the game object, so read it on the framework thread.
++        return _dalamudUtil.RunOnFrameworkThread(() =>
++            _pairManager.GetVisiblePairs().FirstOrDefault(p => p.PlayerCharacterId == entityId)).GetAwaiter().GetResult();
++    }
++
++    private static IEnumerable<ReplacementInput> Inputs(CharacterData? data)
++        => data?.FileReplacements.SelectMany(kv => kv.Value.Select(f => new ReplacementInput(kv.Key.ToString(), f.GamePaths, f.Hash, f.FileSwapPath)))
++           ?? [];
++
++    private CharacterResolution Resolve(uint entityId)
++    {
++        var files = new Dictionary<string, ResolvedFile>(StringComparer.OrdinalIgnoreCase);
++        var state = new CharacterStateDto { ZoneSyncEnabled = _zoneSyncConfig.Current.EnableGroupZoneSyncJoining };
++        try
++        {
++            if (!_apiController.IsConnected)
++            {
++                state.Lookup = CharacterLookup.NotConnected;
++                return new(state, files);
++            }
++
++            var pair = FindPair(entityId);
++            if (pair == null)
++            {
++                state.Lookup = CharacterLookup.NotSynced;
++                return new(state, files);
++            }
++
++            state.PlayerName = pair.PlayerName;
++            state.IsDirectlyPaired = pair.IsDirectlyPaired;
++            state.IsZoneSyncOnly = pair.IsZoneSyncOnlyPair;
++            state.SharesZoneSyncGroup = pair.UserPair.Groups.Exists(g => g.StartsWith(Constants.GroupZoneSyncPrefix, StringComparison.Ordinal));
++            if (pair.IsPaused)
++            {
++                state.Lookup = CharacterLookup.Paused;
++                return new(state, files);
++            }
++
++            state.Lookup = CharacterLookup.Found;
++            var handler = pair.ExportHandler;
++            var received = pair.GetFilteredLastReceivedData();
++            var snapshot = handler?.ExportSnapshot;
++            state.ReceivedDataHash = received?.DataHash.Value;
++            state.AppliedDataHash = snapshot?.DataHash;
++            state.AppliedAtUtc = snapshot?.AppliedAtUtc;
++            state.HasManipulations = !string.IsNullOrEmpty(received?.ManipulationData);
++
++            var hidden = Inputs(pair.LastReceivedCharacterData).Count() - Inputs(received).Count();
++            if (hidden > 0)
++                state.Notes.Add($"{hidden} resource(s) were removed by your PlayerSync filter or permission settings (animations, VFX, sounds, minions, pets) and are not available.");
++
++            state.Resources = snapshot != null
++                ? ResourceResolver.Resolve(Inputs(snapshot.AppliedData), snapshot.ModdedPaths, snapshot.CompressionRedirects, snapshot.ExcludedByValidation,
++                    _fileCacheManager.CacheFolder, _ipcManager.Penumbra.ModDirectory, files)
++                : ResourceResolver.Unresolved(Inputs(received));
++            state.SyncState = ResourceResolver.ComputeState(state.ReceivedDataHash, handler?.IsSyncInProgress == true, state.AppliedDataHash, state.Resources);
++        }
++        catch (Exception ex)
++        {
++            _logger.LogWarning(ex, "Export IPC: failed to build character state");
++            state.Lookup = CharacterLookup.NotSynced;
++            state.Notes.Add("PlayerSync could not read the character state: " + ex.Message);
++            files.Clear();
++        }
++
++        return new(state, files);
++    }
++
++    private bool RequestResync(uint entityId)
++    {
++        try
++        {
++            var pair = FindPair(entityId);
++            if (pair == null || pair.IsPaused || pair.ExportHandler == null || pair.LastReceivedCharacterData == null) return false;
++            if (pair.ExportHandler.IsSyncInProgress) return true;
++            _logger.LogDebug("Export IPC: resync requested for {pair}", pair.PairUIDName);
++            // Same path as the "Reapply last data" context menu entry: recomputes the mapping,
++            // reuses cached files and only downloads what is missing.
++            pair.ApplyLastReceivedData(forced: true);
++            return true;
++        }
++        catch (Exception ex)
++        {
++            _logger.LogWarning(ex, "Export IPC: resync failed");
++            return false;
++        }
++    }
++}
+diff --git a/PlayerSync/Interop/Ipc/Export/PairExportSnapshot.cs b/PlayerSync/Interop/Ipc/Export/PairExportSnapshot.cs
+new file mode 100644
+index 0000000..b3dc373
+--- /dev/null
++++ b/PlayerSync/Interop/Ipc/Export/PairExportSnapshot.cs
+@@ -0,0 +1,16 @@
++using MareSynchronos.API.Data;
++
++namespace PlayerSync.Interop.Ipc.Export;
++
++/// <summary>
++/// What a <see cref="MareSynchronos.PlayerData.Handlers.PairHandler"/> applied to Penumbra the last time
++/// an application finished: the data, the game path to local file mapping and the compressed alternate
++/// substitutions. Captured for the export IPC; nothing reads it back into the sync pipeline.
++/// </summary>
++internal sealed record PairExportSnapshot(
++    string DataHash,
++    DateTimeOffset AppliedAtUtc,
++    CharacterData AppliedData,
++    IReadOnlyDictionary<(string GamePath, string? Hash), string> ModdedPaths,
++    IReadOnlyDictionary<string, string> CompressionRedirects,
++    IReadOnlySet<(string GamePath, string? Hash)> ExcludedByValidation);
+diff --git a/PlayerSync/MareSempiterne.json b/PlayerSync/MareSempiterne.json
+index f50608b..95b37d4 100644
+--- a/PlayerSync/MareSempiterne.json
++++ b/PlayerSync/MareSempiterne.json
+@@ -2,12 +2,12 @@
+   "Author": "The PlayerSync Team",
+   "Name": "PlayerSync",
+   "Punchline": "Let others see you as you see yourself.",
+-  "Description": "This plugin will synchronize your Penumbra mods and current Glamourer state with other paired clients automatically.",
++  "Description": "This plugin will synchronize your Penumbra mods and current Glamourer state with other paired clients automatically.\n\nUnofficial build with the export IPC used by Character Mod Exporter (https://github.com/xdarkness1776/FF14Plugin). Not endorsed by the PlayerSync team.",
+   "InternalName": "MareSempiterne",
+   "ApplicableVersion": "any",
+   "Tags": [
+     "customization"
+   ],
+   "IconUrl": "https://maresempiterne.io/download/plugin/icon.png",
+-  "RepoUrl": ""
++  "RepoUrl": "https://github.com/universalconquistador/MareSynchronosClient"
+ }
+diff --git a/PlayerSync/PlayerData/Handlers/PairHandler.cs b/PlayerSync/PlayerData/Handlers/PairHandler.cs
+index 730cfb6..93ee0c1 100644
+--- a/PlayerSync/PlayerData/Handlers/PairHandler.cs
++++ b/PlayerSync/PlayerData/Handlers/PairHandler.cs
+@@ -170,6 +170,14 @@ public sealed class PairHandler : DisposableMediatorSubscriberBase
+     // Maps from hash in the last applied data to compressed hash
+     public ConcurrentDictionary<string, string> ActiveCompressionRedirects { get; private set; } = new ConcurrentDictionary<string, string>();
+ 
++    // Export IPC: the resolved game path -> local file mapping of the last successful application.
++    private int _runningPipelines;
++    internal PlayerSync.Interop.Ipc.Export.PairExportSnapshot? ExportSnapshot { get; private set; }
++    internal bool IsSyncInProgress => Volatile.Read(ref _runningPipelines) > 0
++        || _pairDownloadTask is { IsCompleted: false }
++        || _applicationTask is { IsCompleted: false }
++        || Pair.DataApplicationId != null;
++
+     public override string ToString()
+     {
+         return Pair == null ? base.ToString() ?? string.Empty : Pair.UserData.AliasOrUID + ":" + PlayerName + ":" + (PlayerCharacter != nint.Zero ? "HasChar" : "NoChar");
+@@ -365,6 +373,20 @@ public sealed class PairHandler : DisposableMediatorSubscriberBase
+     /// </summary>
+     private async Task DownloadAndApplyCharacterAsync(Guid applicationBase, CharacterData charaData, Dictionary<ObjectKind, HashSet<PlayerChanges>> updatedData,
+         bool updateModdedPaths, bool updateManip, CancellationToken downloadToken, CancellationToken topLevelToken)
++    {
++        Interlocked.Increment(ref _runningPipelines);
++        try
++        {
++            await DownloadAndApplyCharacterCoreAsync(applicationBase, charaData, updatedData, updateModdedPaths, updateManip, downloadToken, topLevelToken).ConfigureAwait(false);
++        }
++        finally
++        {
++            Interlocked.Decrement(ref _runningPipelines);
++        }
++    }
++
++    private async Task DownloadAndApplyCharacterCoreAsync(Guid applicationBase, CharacterData charaData, Dictionary<ObjectKind, HashSet<PlayerChanges>> updatedData,
++        bool updateModdedPaths, bool updateManip, CancellationToken downloadToken, CancellationToken topLevelToken)
+     {
+         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(downloadToken, topLevelToken);
+ 
+@@ -493,6 +515,7 @@ public sealed class PairHandler : DisposableMediatorSubscriberBase
+         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, topLevelToken);
+ 
+         _applicationId = Guid.NewGuid();
++        var keysBeforeValidation = moddedPaths.Keys.ToList();
+ 
+         if (_penumbraCollection == null)
+         {
+@@ -602,6 +625,19 @@ public sealed class PairHandler : DisposableMediatorSubscriberBase
+ 
+             _cachedData = charaData;
+ 
++            if (updateModdedPaths)
++            {
++                ExportSnapshot = new PlayerSync.Interop.Ipc.Export.PairExportSnapshot(charaData.DataHash.Value, DateTimeOffset.UtcNow, charaData,
++                    new Dictionary<(string GamePath, string? Hash), string>(moddedPaths),
++                    new Dictionary<string, string>(ActiveCompressionRedirects, StringComparer.OrdinalIgnoreCase),
++                    keysBeforeValidation.Where(k => !moddedPaths.ContainsKey(k)).ToHashSet());
++            }
++            else if (ExportSnapshot != null)
++            {
++                // Only customization changed; the file mapping of the previous application is still the one in Penumbra.
++                ExportSnapshot = ExportSnapshot with { DataHash = charaData.DataHash.Value, AppliedAtUtc = DateTimeOffset.UtcNow, AppliedData = charaData };
++            }
++
+             Logger.LogDebug("[{applicationId}] Application finished", _applicationId);
+         }
+         catch (AggregateException ex) when (ex.InnerExceptions.Any(e => e is NullReferenceException or ArgumentNullException))
+diff --git a/PlayerSync/PlayerData/Pairs/Pair.cs b/PlayerSync/PlayerData/Pairs/Pair.cs
+index a305bbb..ac5b313 100644
+--- a/PlayerSync/PlayerData/Pairs/Pair.cs
++++ b/PlayerSync/PlayerData/Pairs/Pair.cs
+@@ -303,6 +303,12 @@ public class Pair
+         CachedPlayer = _cachedPlayerFactory.Create(this);
+     }
+ 
++    // Used by the export IPC (Interop/Ipc/Export). Read-only views of state PlayerSync already tracks.
++    internal PairHandler? ExportHandler => CachedPlayer;
++
++    internal CharacterData? GetFilteredLastReceivedData()
++        => RemoveNotSyncedFiles(LastReceivedCharacterData?.DeepClone());
++
+     private CharacterData? RemoveNotSyncedFiles(CharacterData? data)
+     {
+         _logger.LogTrace("Removing not synced files");
+diff --git a/PlayerSync/Plugin.cs b/PlayerSync/Plugin.cs
+index 99c992d..58e203e 100644
+--- a/PlayerSync/Plugin.cs
++++ b/PlayerSync/Plugin.cs
+@@ -161,6 +161,9 @@ public sealed class Plugin : IDalamudPlugin
+                 s.GetRequiredService<CharaDataManager>(),
+                 s.GetRequiredService<DalamudUtilService>(),
+                 s.GetRequiredService<MareMediator>()));
++            collection.AddSingleton((s) => new PlayerSync.Interop.Ipc.Export.ExportIpcProvider(s.GetRequiredService<ILogger<PlayerSync.Interop.Ipc.Export.ExportIpcProvider>>(),
++                pluginInterface, s.GetRequiredService<PairManager>(), s.GetRequiredService<ApiController>(), s.GetRequiredService<FileCacheManager>(),
++                s.GetRequiredService<IpcManager>(), s.GetRequiredService<DalamudUtilService>(), s.GetRequiredService<ZoneSyncConfigService>()));
+             collection.AddSingleton<SelectPairForTagUi>();
+             collection.AddSingleton((s) => new EventAggregator(pluginInterface.ConfigDirectory.FullName,
+                 s.GetRequiredService<ILogger<EventAggregator>>(), s.GetRequiredService<MareMediator>()));
+@@ -300,6 +303,7 @@ public sealed class Plugin : IDalamudPlugin
+             collection.AddHostedService(p => p.GetRequiredService<DtrEntry>());
+             collection.AddHostedService(p => p.GetRequiredService<EventAggregator>());
+             collection.AddHostedService(p => p.GetRequiredService<IpcProvider>());
++            collection.AddHostedService(p => p.GetRequiredService<PlayerSync.Interop.Ipc.Export.ExportIpcProvider>());
+             collection.AddHostedService(p => p.GetRequiredService<MarePlugin>());
+             collection.AddHostedService(p => p.GetRequiredService<GroupZoneSyncManager>());
+             collection.AddHostedService(p => p.GetRequiredService<PairInviteManager>());
+diff --git a/PlayerSync/UI/EditProfileUi.cs b/PlayerSync/UI/EditProfileUi.cs
+index fe6d18c..f13f988 100644
+--- a/PlayerSync/UI/EditProfileUi.cs
++++ b/PlayerSync/UI/EditProfileUi.cs
+@@ -22,6 +22,7 @@ using SixLabors.ImageSharp.Formats.Png;
+ using SixLabors.ImageSharp.PixelFormats;
+ using SixLabors.ImageSharp.Processing;
+ using System.Numerics;
++using Rectangle = SixLabors.ImageSharp.Rectangle;
+ 
+ namespace MareSynchronos.UI;
+ 

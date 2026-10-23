@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- These sources are also compiled into the patched PlayerSync build (see playersync-fork/apply.sh). Keep them dependency-free. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Version>$(ExporterVersion)</Version>
+  </PropertyGroup>
+</Project>
