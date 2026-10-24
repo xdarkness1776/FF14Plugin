@@ -6,8 +6,12 @@ using PlayerSyncExport.Contracts;
 
 namespace CharacterModExporter.Core;
 
-/// <summary>One file redirection in a package: the game paths it replaces and the exported file that provides them.</summary>
-public sealed record PackageFile(string SourcePath, string FileName, IReadOnlyList<string> GamePaths);
+/// <summary>
+/// One file redirection in a package: the game paths it replaces and the exported file that provides them.
+/// <paramref name="Sha256"/>, when given, is the hash the export verified; the bytes put into the package must still
+/// have it, so a file changed or replaced after it was exported is never packaged.
+/// </summary>
+public sealed record PackageFile(string SourcePath, string FileName, IReadOnlyList<string> GamePaths, string? Sha256 = null);
 
 public sealed record PackageResult(string? PackagePath, List<string> Problems, List<string> Omitted, int FileCount, int RedirectCount, int SwapCount)
 {
@@ -44,6 +48,23 @@ public static class PenumbraPackageBuilder
         return p;
     }
 
+    /// <summary>
+    /// Why a file swap cannot be used, or null when it can. Both sides must be valid game paths, a swap may not point
+    /// at itself, and both sides must have the same extension (a swap makes the game load the target in place of
+    /// the source, so a texture can only be swapped for a texture).
+    /// </summary>
+    public static string? SwapProblem(string? rawFrom, string? rawTo)
+    {
+        var from = NormalizeGamePath(rawFrom);
+        var to = NormalizeGamePath(rawTo);
+        if (from == null) return "the swapped path is not a valid game path";
+        if (to == null) return "the swap target is not a valid game path";
+        if (string.Equals(from, to, StringComparison.Ordinal)) return "the swap points at itself";
+        if (!string.Equals(Path.GetExtension(from), Path.GetExtension(to), StringComparison.Ordinal) || Path.GetExtension(from).Length == 0)
+            return "the swap target has a different file type";
+        return null;
+    }
+
     public static PackageResult Build(string outputDirectory, string modName, string description, string version,
         IReadOnlyList<PackageFile> files, IReadOnlyDictionary<string, string> fileSwaps, IReadOnlyList<string>? tags = null)
     {
@@ -51,7 +72,7 @@ public static class PenumbraPackageBuilder
         var omitted = new List<string>();
         var redirects = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var swaps = new SortedDictionary<string, string>(StringComparer.Ordinal);
-        var usedFiles = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var usedFiles = new SortedDictionary<string, PackageFile>(StringComparer.Ordinal);
 
         foreach (var file in files)
         {
@@ -78,19 +99,21 @@ public static class PenumbraPackageBuilder
                 }
 
                 redirects[gamePath] = relative;
-                usedFiles[file.FileName] = file.SourcePath;
+                usedFiles[file.FileName] = file;
             }
         }
 
         foreach (var (rawFrom, rawTo) in fileSwaps)
         {
-            var from = NormalizeGamePath(rawFrom);
-            var to = NormalizeGamePath(rawTo);
-            if (from == null || to == null)
+            var swapProblem = SwapProblem(rawFrom, rawTo);
+            if (swapProblem != null)
             {
-                omitted.Add($"{rawFrom} -> {rawTo}: not a valid file swap.");
+                omitted.Add($"{rawFrom} -> {rawTo}: not a valid file swap ({swapProblem}).");
                 continue;
             }
+
+            var from = NormalizeGamePath(rawFrom)!;
+            var to = NormalizeGamePath(rawTo)!;
 
             if (redirects.ContainsKey(from))
             {
@@ -136,16 +159,28 @@ public static class PenumbraPackageBuilder
         var tempPath = packagePath + VerifiedFileCopier.TempSuffix;
         try
         {
+            var changed = new List<string>();
             using (var zipStream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var zip = new ZipArchive(zipStream, ZipArchiveMode.Create))
             {
                 WriteJson(zip, "meta.json", meta);
                 WriteJson(zip, "default_mod.json", defaultMod);
-                foreach (var (fileName, source) in usedFiles)
+                foreach (var (fileName, file) in usedFiles)
                 {
                     // Game resources are mostly already compressed; Fastest keeps packaging quick.
-                    zip.CreateEntryFromFile(source, FilesFolder + "/" + fileName, CompressionLevel.Fastest);
+                    var actual = AddEntry(zip, FilesFolder + "/" + fileName, file.SourcePath);
+                    if (file.Sha256 != null && !string.Equals(actual, file.Sha256, StringComparison.OrdinalIgnoreCase))
+                        changed.Add($"{fileName} changed after it was exported (SHA-256 {actual}, exported as {file.Sha256.ToUpperInvariant()}).");
                 }
+            }
+
+            if (changed.Count > 0)
+            {
+                File.Delete(tempPath);
+                RemoveIfEmpty(outputDirectory, createdDirectory);
+                problems.AddRange(changed);
+                problems.Add("No package was created, because it would not contain the verified files.");
+                return new(null, problems, omitted, 0, 0, 0);
             }
 
             var validation = Validate(tempPath);
@@ -168,6 +203,23 @@ public static class PenumbraPackageBuilder
         }
 
         return new(packagePath, problems, omitted, usedFiles.Count, redirects.Count, swaps.Count);
+    }
+
+    /// <summary>Copies a file into a new archive entry and returns the SHA-256 of the bytes written.</summary>
+    private static string AddEntry(ZipArchive zip, string entryName, string sourcePath)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+        using var target = zip.CreateEntry(entryName, CompressionLevel.Fastest).Open();
+        var buffer = new byte[1024 * 256];
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            hash.AppendData(buffer, 0, read);
+            target.Write(buffer, 0, read);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     /// <summary>

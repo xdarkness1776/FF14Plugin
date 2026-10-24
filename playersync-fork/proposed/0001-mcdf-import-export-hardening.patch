@@ -1,0 +1,216 @@
+diff --git a/PlayerSync/Services/CharaData/CharaDataFileHandler.cs b/PlayerSync/Services/CharaData/CharaDataFileHandler.cs
+index 0ef54fd..2840c3b 100644
+--- a/PlayerSync/Services/CharaData/CharaDataFileHandler.cs
++++ b/PlayerSync/Services/CharaData/CharaDataFileHandler.cs
+@@ -26,7 +26,6 @@ public sealed class CharaDataFileHandler : IDisposable
+     private readonly ILogger<CharaDataFileHandler> _logger;
+     private readonly MareCharaFileDataFactory _mareCharaFileDataFactory;
+     private readonly PlayerDataFactory _playerDataFactory;
+-    private int _globalFileCounter = 0;
+ 
+     public CharaDataFileHandler(ILogger<CharaDataFileHandler> logger, FileDownloadManagerFactory fileDownloadManagerFactory, FileUploadManager fileUploadManager, FileCacheManager fileCacheManager,
+             DalamudUtilService dalamudUtilService, GameObjectHandlerFactory gameObjectHandlerFactory, PlayerDataFactory playerDataFactory)
+@@ -164,11 +163,18 @@ public sealed class CharaDataFileHandler : IDisposable
+                     }
+                 }
+ 
++                if (loadedCharaFile.CharaFileData.Files.Count > MareCharaFileHeader.MaxFiles)
++                    throw new InvalidDataException($"MCDF lists more than {MareCharaFileHeader.MaxFiles} files");
++
+                 var itemNr = 0;
+                 foreach (var item in loadedCharaFile.CharaFileData.Files)
+                 {
+                     itemNr++;
+-                    expectedLength += item.Length;
++                    // Every later file's position depends on this length, so a bad one makes the rest unreadable.
++                    if (item.Length <= 0) throw new InvalidDataException($"MCDF file {itemNr} has an invalid length {item.Length}");
++                    if (!IsSha1(item.Hash)) throw new InvalidDataException($"MCDF file {itemNr} has an invalid hash");
++                    expectedLength = checked(expectedLength + item.Length);
++                    if (expectedLength > MareCharaFileHeader.MaxTotalFileBytes) throw new InvalidDataException("MCDF declares too much file data");
+                     foreach (var gamePath in item.GamePaths)
+                     {
+                         _logger.LogTrace("File {itemNr}: {gamePath} = {len}", itemNr, gamePath, item.Length.ToByteString());
+@@ -190,6 +196,12 @@ public sealed class CharaDataFileHandler : IDisposable
+         }
+     }
+ 
++    /// <summary>
++    /// Extracts and verifies every file of an MCDF and checks every game path and swap, before anything is applied.
++    /// Throws when the file is truncated, a file's SHA-1 differs from its hash, data follows the last file, a path is
++    /// not a valid game path, or two entries claim one game path with different content. The caller deletes
++    /// <paramref name="extractedFiles"/> in every case.
++    /// </summary>
+     public Dictionary<string, string> McdfExtractFiles(MareCharaFileHeader? charaFileHeader, long expectedLength, List<string> extractedFiles)
+     {
+         if (charaFileHeader == null) return [];
+@@ -199,23 +211,42 @@ public sealed class CharaDataFileHandler : IDisposable
+         MareCharaFileHeader.AdvanceReaderToData(reader);
+ 
+         long totalRead = 0;
+-        Dictionary<string, string> gamePathToFilePath = new(StringComparer.Ordinal);
++        // Penumbra compares game paths without regard to case.
++        Dictionary<string, string> gamePathToFilePath = new(StringComparer.OrdinalIgnoreCase);
++        Dictionary<string, string> gamePathToHash = new(StringComparer.OrdinalIgnoreCase);
++        var buffer = new byte[256 * 1024];
+         foreach (var fileData in charaFileHeader.CharaFileData.Files)
+         {
+-            var fileName = Path.Combine(_fileCacheManager.CacheFolder, "mare_" + _globalFileCounter++ + ".tmp");
++            var fileName = Path.Combine(_fileCacheManager.CacheFolder, "mare_" + Guid.NewGuid().ToString("N") + ".tmp");
+             extractedFiles.Add(fileName);
+             var length = fileData.Length;
+-            var bufferSize = length;
+-            using var fs = File.OpenWrite(fileName);
+-            using var wr = new BinaryWriter(fs);
++            if (length <= 0) throw new InvalidDataException($"Invalid MCDF file length {length}");
+             _logger.LogTrace("Reading {length} of {fileName}", length.ToByteString(), fileName);
+-            var buffer = reader.ReadBytes(bufferSize);
+-            wr.Write(buffer);
+-            wr.Flush();
+-            wr.Close();
+-            if (buffer.Length == 0) throw new EndOfStreamException("Unexpected EOF");
++            using (var sha1 = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA1))
++            using (var fs = new FileStream(fileName, FileMode.CreateNew, FileAccess.Write, FileShare.None))
++            {
++                // Read exactly the declared length: one Read call may return fewer bytes than requested.
++                long remaining = length;
++                while (remaining > 0)
++                {
++                    var read = lz4Stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
++                    if (read <= 0) throw new EndOfStreamException("Unexpected EOF: the MCDF is truncated");
++                    sha1.AppendData(buffer, 0, read);
++                    fs.Write(buffer, 0, read);
++                    remaining -= read;
++                }
++
++                var actualHash = Convert.ToHexString(sha1.GetHashAndReset());
++                if (!string.Equals(actualHash, fileData.Hash, StringComparison.OrdinalIgnoreCase))
++                    throw new InvalidDataException($"MCDF file data does not match its hash {fileData.Hash}");
++            }
++
+             foreach (var path in fileData.GamePaths)
+             {
++                if (!IsValidGamePath(path)) throw new InvalidDataException($"MCDF contains an invalid game path {path}");
++                if (gamePathToHash.TryGetValue(path, out var otherHash) && !string.Equals(otherHash, fileData.Hash, StringComparison.OrdinalIgnoreCase))
++                    throw new InvalidDataException($"MCDF maps {path} to two different files");
++                gamePathToHash[path] = fileData.Hash;
+                 gamePathToFilePath[path] = fileName;
+                 _logger.LogTrace("{path} => {fileName} [{hash}]", path, fileName, fileData.Hash);
+             }
+@@ -223,9 +254,36 @@ public sealed class CharaDataFileHandler : IDisposable
+             _logger.LogTrace("Read {read}/{expected} bytes", totalRead.ToByteString(), expectedLength.ToByteString());
+         }
+ 
++        if (lz4Stream.Read(buffer, 0, 1) > 0) throw new InvalidDataException("MCDF has data after its last file");
++
++        foreach (var swap in charaFileHeader.CharaFileData.FileSwaps)
++        {
++            if (!IsValidGamePath(swap.FileSwapPath)) throw new InvalidDataException($"MCDF contains an invalid file swap target {swap.FileSwapPath}");
++            foreach (var path in swap.GamePaths)
++            {
++                if (!IsValidGamePath(path)) throw new InvalidDataException($"MCDF contains an invalid file swap {path}");
++                if (string.Equals(path, swap.FileSwapPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException($"MCDF swaps {path} to itself");
++                if (gamePathToFilePath.ContainsKey(path)) throw new InvalidDataException($"MCDF has both a file and a swap for {path}");
++            }
++        }
++
+         return gamePathToFilePath;
+     }
+ 
++    private static bool IsSha1(string? hash)
++        => hash is { Length: 40 } && hash.All(Uri.IsHexDigit);
++
++    /// <summary>A relative game path: forward slashes, no empty, "." or ".." segments, no drive or control characters.</summary>
++    private static bool IsValidGamePath(string? path)
++    {
++        if (string.IsNullOrWhiteSpace(path) || path.Length > 260) return false;
++        if (path.Contains('\\', StringComparison.Ordinal) || path.Contains(':', StringComparison.Ordinal) || path.StartsWith('/')) return false;
++        if (path.Any(c => char.IsControl(c) || c > 0x7F)) return false;
++        var segments = path.Split('/');
++        if (segments.Any(s => s.Length == 0 || s is "." or "..")) return false;
++        return Path.GetExtension(path).Length > 1;
++    }
++
+     public async Task UpdateCharaDataAsync(CharaDataExtendedUpdateDto updateDto)
+     {
+         var data = await CreatePlayerData().ConfigureAwait(false);
+@@ -266,6 +324,8 @@ public sealed class CharaDataFileHandler : IDisposable
+             if (data == null) return;
+ 
+             var mareCharaFileData = _mareCharaFileDataFactory.Create(description, data);
++            if (mareCharaFileData.MissingFiles.Count > 0)
++                _logger.LogWarning("MCDF is saved without {count} file(s) that have no local copy: {paths}", mareCharaFileData.MissingFiles.Count, string.Join(", ", mareCharaFileData.MissingFiles));
+             MareCharaFileHeader output = new(MareCharaFileHeader.CurrentVersion, mareCharaFileData);
+ 
+             using var fs = new FileStream(tempFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+@@ -286,9 +346,10 @@ public sealed class CharaDataFileHandler : IDisposable
+                 var fsRead = File.OpenRead(file.ResolvedFilepath);
+                 await using (fsRead.ConfigureAwait(false))
+                 {
+-                    using var br = new BinaryReader(fsRead);
++                    // The header already promised item.Length bytes; a file that changed since then would shift every later file.
++                    if (fsRead.Length != item.Length) throw new InvalidOperationException($"{file.ResolvedFilepath} changed size while saving the MCDF");
+                     byte[] buffer = new byte[item.Length];
+-                    br.Read(buffer, 0, item.Length);
++                    await fsRead.ReadExactlyAsync(buffer).ConfigureAwait(false);
+                     writer.Write(buffer);
+                 }
+             }
+diff --git a/PlayerSync/Services/CharaData/Models/MareCharaFileData.cs b/PlayerSync/Services/CharaData/Models/MareCharaFileData.cs
+index 0dde199..0eab9eb 100644
+--- a/PlayerSync/Services/CharaData/Models/MareCharaFileData.cs
++++ b/PlayerSync/Services/CharaData/Models/MareCharaFileData.cs
+@@ -15,6 +15,10 @@ public record MareCharaFileData
+     public List<FileData> Files { get; set; } = [];
+     public List<FileSwap> FileSwaps { get; set; } = [];
+ 
++    /// <summary>Game paths left out because no local file was found. Not serialized, so the format is unchanged.</summary>
++    [System.Text.Json.Serialization.JsonIgnore]
++    public List<string> MissingFiles { get; } = [];
++
+     public MareCharaFileData() { }
+     public MareCharaFileData(FileCacheManager manager, string description, CharacterData dto)
+     {
+@@ -47,7 +51,12 @@ public record MareCharaFileData
+                     var filePath = manager.GetFileCacheByHash(file.First().Hash)?.ResolvedFilepath;
+                     if (filePath != null)
+                     {
+-                        Files.Add(new FileData(file.SelectMany(f => f.GamePaths), (int)new FileInfo(filePath).Length, file.First().Hash));
++                        Files.Add(new FileData(file.SelectMany(f => f.GamePaths), checked((int)new FileInfo(filePath).Length), file.First().Hash));
++                    }
++                    else
++                    {
++                        // Recorded instead of dropped silently: the saved file is missing these.
++                        MissingFiles.AddRange(file.SelectMany(f => f.GamePaths));
+                     }
+                 }
+             }
+diff --git a/PlayerSync/Services/CharaData/Models/MareCharaFileHeader.cs b/PlayerSync/Services/CharaData/Models/MareCharaFileHeader.cs
+index 28f1af6..a77dd8b 100644
+--- a/PlayerSync/Services/CharaData/Models/MareCharaFileHeader.cs
++++ b/PlayerSync/Services/CharaData/Models/MareCharaFileHeader.cs
+@@ -4,6 +4,11 @@ public record MareCharaFileHeader(byte Version, MareCharaFileData CharaFileData)
+ {
+     public static readonly byte CurrentVersion = 1;
+ 
++    // Limits for reading untrusted files. Real headers are a few hundred KB; real files are far below these.
++    public const int MaxHeaderBytes = 32 * 1024 * 1024;
++    public const int MaxFiles = 100_000;
++    public const long MaxTotalFileBytes = 16L * 1024 * 1024 * 1024;
++
+     public byte Version { get; set; } = Version;
+     public MareCharaFileData CharaFileData { get; set; } = CharaFileData;
+     public string FilePath { get; private set; } = string.Empty;
+@@ -31,8 +36,12 @@ public record MareCharaFileHeader(byte Version, MareCharaFileData CharaFileData)
+         if (version == 1)
+         {
+             var dataLength = reader.ReadInt32();
++            // Checked before reading: BinaryReader.ReadBytes allocates the requested length up front.
++            if (dataLength <= 0 || dataLength > MaxHeaderBytes) throw new InvalidDataException($"MCDF header length {dataLength} is not valid");
++            var data = reader.ReadBytes(dataLength);
++            if (data.Length != dataLength) throw new EndOfStreamException("MCDF header is truncated");
+ 
+-            decoded = new(version, MareCharaFileData.FromByteArray(reader.ReadBytes(dataLength)))
++            decoded = new(version, MareCharaFileData.FromByteArray(data) ?? throw new InvalidDataException("MCDF header is empty"))
+             {
+                 FilePath = path,
+             };

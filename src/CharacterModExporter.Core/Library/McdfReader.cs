@@ -23,6 +23,20 @@ public enum McdfFileStatus
     InvalidPath,
     /// <summary>Another entry claims one of this entry's game paths with different content; which one applies is unknown.</summary>
     ConflictingGamePath,
+    /// <summary>The entry stores zero bytes. No game file is empty, and PlayerSync's importer stops at such an entry.</summary>
+    EmptyPayload,
+}
+
+/// <summary>What is known about one file swap of an MCDF.</summary>
+public enum McdfSwapStatus
+{
+    Valid,
+    /// <summary>A path or the target is not a valid game path, the swap points at itself, or the file types differ.</summary>
+    Invalid,
+    /// <summary>A stored file claims the same game path. PlayerSync's importer applies swaps last, so the swap would replace it.</summary>
+    OverridesStoredFile,
+    /// <summary>Another swap redirects the same game path to a different target.</summary>
+    ConflictingTargets,
 }
 
 /// <summary>One file stored in an MCDF: the game paths it was used for, its length, and the SHA-1 the file claims.</summary>
@@ -73,6 +87,10 @@ public sealed class McdfSwap
 {
     public List<string> GamePaths { get; set; } = [];
     public string Target { get; set; } = string.Empty;
+    public McdfSwapStatus Status { get; set; }
+
+    /// <summary>Why the swap is not <see cref="McdfSwapStatus.Valid"/>.</summary>
+    public string? Problem { get; set; }
 }
 
 /// <summary>
@@ -162,7 +180,7 @@ public static class McdfReader
         JsonDocument doc;
         try
         {
-            doc = JsonDocument.Parse(ReadExactly(decompressed, length));
+            doc = JsonDocument.Parse(ReadHeader(decompressed, length));
         }
         catch (JsonException ex)
         {
@@ -205,6 +223,7 @@ public static class McdfReader
         }
 
         ValidateEntries(snapshot);
+        ValidateSwaps(snapshot);
         if (!verifyContents) return snapshot;
 
         var buffer = new byte[1024 * 256];
@@ -277,6 +296,12 @@ public static class McdfReader
             }
         }
 
+        foreach (var f in snapshot.Files.Where(f => f.Length == 0 && f.Status == McdfFileStatus.NotRead))
+        {
+            f.Status = McdfFileStatus.EmptyPayload;
+            snapshot.Warnings.Add($"A stored file for {f.GamePaths.FirstOrDefault() ?? "(no game path)"} is empty; PlayerSync cannot import this MCDF and the entry is not used as evidence.");
+        }
+
         if (conflicting.Count == 0) return;
         foreach (var f in snapshot.Files.Where(f => f.Status == McdfFileStatus.NotRead))
         {
@@ -286,6 +311,57 @@ public static class McdfReader
 
         snapshot.Warnings.Add($"{conflicting.Count} game path(s) are claimed by stored files with different content (for example {conflicting.First()}); " +
                               "those files are not used as evidence.");
+    }
+
+    /// <summary>
+    /// Checks every swap the way it would be applied: PlayerSync's importer puts stored files and then swaps into one
+    /// dictionary keyed by the exact game path, so a swap replaces a stored file for the same path, and of two swaps
+    /// for one path the last wins. Penumbra compares game paths without regard to case, so paths are compared
+    /// lowercased here. Only valid swaps are used as evidence.
+    /// </summary>
+    private static void ValidateSwaps(McdfSnapshot snapshot)
+    {
+        var filePaths = snapshot.Files.SelectMany(f => f.GamePaths).Select(PenumbraPackageBuilder.NormalizeGamePath)
+            .Where(p => p != null).Select(p => p!).ToHashSet(StringComparer.Ordinal);
+        var targets = new Dictionary<string, string>(StringComparer.Ordinal);
+        var conflicting = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var s in snapshot.FileSwaps)
+        {
+            var problem = s.GamePaths.Count == 0 ? "the swap has no game path" : s.GamePaths.Select(p => PenumbraPackageBuilder.SwapProblem(p, s.Target)).FirstOrDefault(p => p != null);
+            if (problem != null)
+            {
+                s.Status = McdfSwapStatus.Invalid;
+                s.Problem = problem;
+                snapshot.Warnings.Add($"File swap {s.GamePaths.FirstOrDefault() ?? "(no game path)"} -> {s.Target} is not used: {problem}.");
+                continue;
+            }
+
+            var target = PenumbraPackageBuilder.NormalizeGamePath(s.Target)!;
+            foreach (var from in s.GamePaths.Select(p => PenumbraPackageBuilder.NormalizeGamePath(p)!))
+            {
+                if (targets.TryGetValue(from, out var other) && !string.Equals(other, target, StringComparison.Ordinal)) conflicting.Add(from);
+                else targets.TryAdd(from, target);
+            }
+
+            var overridden = s.GamePaths.Select(p => PenumbraPackageBuilder.NormalizeGamePath(p)!).FirstOrDefault(filePaths.Contains);
+            if (overridden != null)
+            {
+                s.Status = McdfSwapStatus.OverridesStoredFile;
+                s.Problem = $"a stored file also claims {overridden}";
+                snapshot.Warnings.Add($"File swap for {overridden} would replace the stored file for the same path when PlayerSync imports it; neither is certain, the swap is not used.");
+            }
+        }
+
+        foreach (var s in snapshot.FileSwaps.Where(s => s.Status == McdfSwapStatus.Valid))
+        {
+            var clash = s.GamePaths.Select(p => PenumbraPackageBuilder.NormalizeGamePath(p)!).FirstOrDefault(conflicting.Contains);
+            if (clash == null) continue;
+            s.Status = McdfSwapStatus.ConflictingTargets;
+            s.Problem = $"another swap redirects {clash} elsewhere";
+        }
+
+        if (conflicting.Count > 0)
+            snapshot.Warnings.Add($"{conflicting.Count} game path(s) are swapped to different targets by different swaps (for example {conflicting.First()}); those swaps are not used.");
     }
 
     /// <summary>The snapshot as matching input. Only files whose bytes matched their hash count as evidence.</summary>
@@ -300,7 +376,7 @@ public static class McdfReader
                 f.Verified ? ResourceAvailability.Available : ResourceAvailability.Missing));
         }
 
-        foreach (var s in snapshot.FileSwaps)
+        foreach (var s in snapshot.FileSwaps.Where(s => s.Status == McdfSwapStatus.Valid))
         {
             var paths = s.GamePaths.Select(PenumbraPackageBuilder.NormalizeGamePath).Where(p => p != null).Select(p => p!).ToList();
             list.Add(new CharacterResource(paths, null, true, PenumbraPackageBuilder.NormalizeGamePath(s.Target),
@@ -318,6 +394,25 @@ public static class McdfReader
     private static string? Str(JsonElement e, string name)
         => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
+    /// <summary>
+    /// Reads the JSON header in chunks, so a header length that the file does not back up costs at most one chunk of
+    /// memory before the early end is found (the length is already capped at <see cref="MaxHeaderBytes"/>).
+    /// </summary>
+    private static byte[] ReadHeader(Stream s, int length)
+    {
+        const int chunk = 64 * 1024;
+        using var header = new MemoryStream(Math.Min(length, chunk));
+        var buffer = new byte[Math.Min(length, chunk)];
+        while (header.Length < length)
+        {
+            var read = s.Read(buffer, 0, (int)Math.Min(buffer.Length, length - header.Length));
+            if (read <= 0) throw new InvalidDataException("The MCDF file ends inside its header.");
+            header.Write(buffer, 0, read);
+        }
+
+        return header.ToArray();
+    }
+
     private static byte[] ReadExactly(Stream s, int count)
     {
         var buffer = new byte[count];
@@ -325,7 +420,7 @@ public static class McdfReader
         while (offset < count)
         {
             var read = s.Read(buffer, offset, count - offset);
-            if (read <= 0) throw new EndOfStreamException("The MCDF file ends early.");
+            if (read <= 0) throw new InvalidDataException("The MCDF file ends early.");
             offset += read;
         }
 

@@ -2,6 +2,26 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.6.1.0: MCDF and export integrity. Reading an MCDF snapshot now:
+- marks empty entries;
+- checks every file swap (invalid targets, swaps to themselves, different file types, swaps that would override a
+  stored file, conflicting swaps), and uses only valid swaps for matching;
+- reads the header in chunks.
+
+Exports never offer PlayerSync's temporary download files (`.bin`, `.tmp`). A package is built only from the
+verified exported copies; a copy that changed after export stops the package. A file swap to itself or to another
+file type is left out of packages.
+
+Export window: Character Files, Original Packages and Export Report are now tabs instead of toggle buttons. The
+buttons are grouped into a Read row and an Export row. A view menu shows all files, the ones ready to export, the
+selected ones, the missing or excluded ones, or the file swaps. Source notes fold away, and missing files explain
+why in a tooltip. An opened MCDF snapshot lists its unverified files and unusable swaps. The settings are in
+collapsible sections.
+
+A source-backed audit of PlayerSync's MCDF, cache, download and transient code is in docs/PLAYERSYNC_AUDIT.md. A
+proposed fix for PlayerSync's own MCDF import and export is in `playersync-fork/proposed/`; it is not applied to the
+fork build. Not tested in game yet.
+
 0.6.0.0: reliability and PlayerSync integration fixes. **Refresh and Scan are read-only and never cause downloads.**
 With the patched PlayerSync build, Scan used to run PlayerSync's "reapply last data", which can download missing files;
 that is now a separate **Reapply PlayerSync Data...** action that asks first and says it may download. The patched

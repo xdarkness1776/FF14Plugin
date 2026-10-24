@@ -11,7 +11,7 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 3 | Live mapping | B wears a mod; open window | Game paths match B's gear; they match Penumbra's On-Screen tab for B (files from PlayerSync's cache). |
 | 3a | Transient files | B uses a modded emote while the window is open, then Refresh | The emote's animation/VFX files are added to the list. |
 | 4 | Waits for loading | B switches gear, immediately Export Selected | Phase "Waiting"; the export starts once no new files appeared for about 5 seconds. |
-| 5 | Scan | Note the PlayerSync log and a network monitor (for example Resource Monitor filtered to the game process); press Refresh, then Scan Character Resources | Stock: B is redrawn; state shows "still loading" and then "loaded". Patched: the list is read again. Both: **zero** download entries in PlayerSync's log and no new transfer to the file server caused by the button. |
+| 5 | Scan | Note the PlayerSync log and a network monitor (for example Resource Monitor filtered to the game process); press Refresh, then Scan (Redraw) | Stock: B is redrawn; state shows "still loading" and then "loaded". Patched: the list is read again. Both: **zero** download entries in PlayerSync's log and no new transfer to the file server caused by the button. |
 | 6 | Cache reuse | Export B twice; Scan in between | Second export: AlreadyPresentIdentical; PlayerSync log shows no download for cached hashes. |
 | 7 | Only B's files | Export B with C nearby | Every Assets file is in B's manifest with game paths; none of C's. |
 | 8 | Cache untouched | Hash/list PlayerSync cache, FileCache.csv and PlayerSync's config.json before and after a Refresh, a Scan and an export | Identical (file list, sizes, times, hashes). |
@@ -29,7 +29,7 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 16d | Categories | Export a character with gear, a hairstyle and a custom emote | `Mods\Gear\...`, `Mods\Character\Hair`, `Mods\Animations\Emotes\Emote - <name>`; no `Other files` mod; manifest lists files that are not a mod. |
 | 16e | Linked files | Export a character using a custom emote with effects and sounds | The emote's .pmp contains its .pap/.tmb, .avfx, .atex and .scd; Penumbra shows it working on import. |
 | 17 | Leaving / despawn | Start export, B teleports away | Job fails "no longer available"; window still usable. |
-| 18 | Cancel | Export a large character, Cancel Export | Phase Cancelled; no `.cmx-partial` files left. |
+| 18 | Cancel | Export a large character, press Cancel | Phase Cancelled; no `.cmx-partial` files left. |
 | 19 | Unload | `/xlplugins` disable exporter mid-export | No exception spam; partial files cleaned. |
 | 20 | Without Penumbra / PlayerSync | Disable Penumbra, then PlayerSync, and open the window each time | A red Source line says which one is not loaded; nothing is exported. |
 | 21 | Release build | Install from the custom repository | Loads next to the official PlayerSync; version matches the release. |
@@ -44,6 +44,20 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 27 | Overrides | Change a package's category and tick Confirmed; restart the game | Both are kept; the package file is unchanged; `package-overrides.json` is in the plugin settings folder. |
 | 28 | MCDF | Save your own character as `.mcdf` in PlayerSync; Open MCDF Snapshot... in an export window | Shown as "Saved snapshot (not live)"; matching runs; nothing is applied to any character. |
 | 29 | Library safety | Choose the export folder (or a folder inside it) as the library | Refused with a message. |
+
+## Live acceptance checklist (0.6.1 MCDF and integrity)
+
+Status: **not run** for every row.
+
+| # | Check | Steps | Expected | Outcome |
+|---|---|---|---|---|
+| 60 | Real MCDF | Save your own character as MCDF in PlayerSync; open it in an export window | All entries Verified, swaps Valid, no warnings | not run |
+| 61 | Damaged MCDF | Cut the last 1 KB off a copy of that file; open it | Last entries MissingPayload; earlier ones Verified; nothing applied anywhere | not run |
+| 62 | Proposed patch import | Build PlayerSync with the proposed patch; import the cut file | Import refused with a "truncated" error; the character is unchanged; no `mare_*.tmp` left in the cache folder | not run |
+| 63 | Proposed patch round trip | With the patch: save an MCDF, then import it on a second character | Imports; the look matches | not run |
+| 64 | Leftover .bin | Copy a cache file to `<40 hex>.bin` in the cache folder, restart the game, export a character | The .bin file is never listed or exported | not run |
+| 65 | Eviction | Start a large export, delete one of its cache files mid-copy | That file is SourceMissing; no package is built; other files are verified | not run |
+| 66 | Export window layout | Open the window at its minimum size (720x460) and at 100 % and 150 % Dalamud scale; switch the three tabs and each view in the menu | Every button is reachable, no row is cut off, each view shows only its rows, the snapshot problem list opens | not run |
 
 ## Live acceptance checklist (0.6 reliability fixes)
 
@@ -90,6 +104,13 @@ Do not mark a row passed from these expectations.
 | 49 | Unload | Disable the exporter while a window is open and B is tracked | No errors in `/xllog`; no event handlers left (re-enable works) | not run |
 
 ## Automated tests (run in the development environment)
+
+Last run for 0.6.1.0 on 2026-10-24: `CharacterModExporter.Tests` 262 passed, 0 failed; `PenumbraCompatTests` 2
+passed. New in 0.6.1: MCDF empty input, truncated header, a header length the file does not back up, too many
+entries, empty entries, payloads out of order, a truncated final entry, short reads, mixed-case duplicate paths,
+swap validation, a fixture written the way PlayerSync writes it, package re-verification and round trip, temporary
+file exclusion (both sources), eviction during an export, and a missing cached file. The proposed PlayerSync patch
+was built, not run (it needs the game).
 
 Last run for 0.6.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 242 passed, 0 failed;
 `CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. `playersync-fork/apply.sh` on a fresh checkout of

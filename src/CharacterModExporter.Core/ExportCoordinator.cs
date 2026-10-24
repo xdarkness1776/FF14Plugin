@@ -225,7 +225,7 @@ public sealed class ExportCoordinator
 
         // Files the character no longer uses would fight the current ones for the same game paths.
         var files = manifest.Assets.Where(a => a.ExportedFile != null && a.IsCurrent)
-            .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths))
+            .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths, a.Sha256))
             .ToList();
         var swaps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in manifest.FileSwaps.Where(s => s.Target != null))
@@ -260,7 +260,7 @@ public sealed class ExportCoordinator
     private void BuildItemMods(ExportTarget target, ExportLayout layout, ExportManifest manifest)
     {
         var exported = manifest.Assets.Where(a => a.ExportedFile != null && a.IsCurrent)
-            .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths))
+            .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths, a.Sha256))
             .ToList();
         var notExported = manifest.Assets.Where(a => a.ExportedFile == null && a.IsCurrent).SelectMany(a => a.GamePaths)
             .Concat(manifest.Unresolved.SelectMany(u => u.GamePaths))

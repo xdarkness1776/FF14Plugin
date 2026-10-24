@@ -32,6 +32,19 @@ public static class ExportPathPolicy
     }
 
     /// <summary>Returns a lowercase alphanumeric extension (max 16 chars) or null if nothing usable remains.</summary>
+    /// <summary>
+    /// True for files that are never a finished game resource: PlayerSync's download leftovers (<c>&lt;hash&gt;.bin</c>,
+    /// still LZ4-wrapped), its MCDF extraction files (<c>mare_N.tmp</c>), and partial copies. PlayerSync's cache scan
+    /// indexes any file whose name starts with 40 characters by the hash of its content, so such a file can appear in
+    /// the cache index; it is never offered for export.
+    /// </summary>
+    public static bool IsTemporaryFile(string path)
+    {
+        var name = Path.GetFileName(path);
+        return name.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".part", StringComparison.OrdinalIgnoreCase) || name.EndsWith(VerifiedFileCopier.TempSuffix, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string? SanitizeExtension(string? extension)
     {
         if (string.IsNullOrEmpty(extension)) return null;

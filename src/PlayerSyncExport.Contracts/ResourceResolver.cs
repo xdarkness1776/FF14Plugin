@@ -91,7 +91,8 @@ public static class ResourceResolver
                 dto.SourceKind = Classify(fi.FullName, cacheFolder, penumbraFolder);
                 var ext = ExportPathPolicy.SanitizeExtension(fi.Extension);
                 // Only files inside PlayerSync's cache or Penumbra's mod folder are ever offered for export.
-                if (fi.Exists && dto.SourceKind != SourceKind.Other && ext != null && ExportPathPolicy.IsSha1Hex(cacheHash))
+                if (fi.Exists && dto.SourceKind != SourceKind.Other && ext != null && ExportPathPolicy.IsSha1Hex(cacheHash)
+                    && !ExportPathPolicy.IsTemporaryFile(fi.Name))
                 {
                     dto.Size = fi.Length;
                     dto.Extension = ext;

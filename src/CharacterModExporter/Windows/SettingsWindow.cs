@@ -50,9 +50,15 @@ public sealed class SettingsWindow : Window
 
     public override void Draw()
     {
+        if (ImGui.CollapsingHeader("Export Location", ImGuiTreeNodeFlags.DefaultOpen)) DrawLocation();
+        if (ImGui.CollapsingHeader("What an Export Builds", ImGuiTreeNodeFlags.DefaultOpen)) DrawOptions();
+        if (ImGui.CollapsingHeader("Original Package Library", ImGuiTreeNodeFlags.DefaultOpen)) DrawLibrary();
+        _dialog.Draw();
+    }
+
+    private void DrawLocation()
+    {
         var export = _config.Export;
-        ImGui.TextUnformatted("Export Location");
-        ImGui.Separator();
         ImGui.TextUnformatted("Current Parent Folder: " + _folders.ResolveParent(export) + (string.IsNullOrWhiteSpace(export.ParentFolder) ? " (default: Documents)" : string.Empty));
         ImGui.TextUnformatted("Exports are written to: " + SafeRoot());
 
@@ -87,10 +93,11 @@ public sealed class SettingsWindow : Window
         }
 
         if (_message != null) ImGui.TextColored(_messageIsError ? ImGuiColors.DalamudRed : ImGuiColors.HealerGreen, _message);
+    }
 
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Export Options");
-        ImGui.Separator();
+    private void DrawOptions()
+    {
+        var export = _config.Export;
         var changed = false;
         var reuse = export.ReuseCharacterFolder;
         if (ImGui.Checkbox("Reuse the character's folder (off: new timestamped folder per export)", ref reuse)) { export.ReuseCharacterFolder = reuse; changed = true; }
@@ -105,21 +112,17 @@ public sealed class SettingsWindow : Window
         var itemMods = export.BuildItemMods;
         if (ImGui.Checkbox("Build one Penumbra mod per item, sorted into category folders under Mods (gear, hair, emotes...)", ref itemMods)) { export.BuildItemMods = itemMods; changed = true; }
         var onlySynced = export.OnlyShowForSyncedCharacters;
+        ImGui.Separator();
         if (ImGui.Checkbox("Only show the context menu entry on characters PlayerSync is syncing", ref onlySynced)) { export.OnlyShowForSyncedCharacters = onlySynced; changed = true; }
         var wait = export.SyncWaitSeconds;
         ImGui.SetNextItemWidth(120);
         if (ImGui.InputInt("Seconds to wait for synchronization", ref wait)) { export.SyncWaitSeconds = Math.Clamp(wait, 5, 900); changed = true; }
         if (changed) _config.Save();
-
-        DrawLibrary();
-        _dialog.Draw();
+        ImGui.TextColored(ImGuiColors.DalamudGrey, "Packages are built only from exported copies that passed their hash check. Nothing is installed or applied.");
     }
 
     private void DrawLibrary()
     {
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Original Package Library");
-        ImGui.Separator();
         ImGui.TextWrapped("The folder with your original (numbered) .pmp files. It is only read: the index and your category and confirmation choices are saved in this plugin's settings folder.");
         ImGui.SetNextItemWidth(-160);
         ImGui.InputText("##library", ref _pendingLibrary, 1024);
