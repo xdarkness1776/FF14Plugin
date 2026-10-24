@@ -26,8 +26,17 @@ page). CI runs keep it as the `packages` artifact.
 3. The window lists the files PlayerSync applied to that character, as Penumbra reports them:
    * Only files the game has loaded are listed. Animations, VFX and sounds are added once they play while the window
      is open (press **Refresh Character Resources** to update the list).
-   * **Scan Character Resources** redraws the character so the game loads its gear again. The exporter never
-     downloads anything; files PlayerSync has not downloaded yet cannot be listed.
+   * **Refresh Character Resources** and **Scan Character Resources** are read-only. Scan redraws the character
+     through Penumbra so the game loads its gear again (stock PlayerSync), or reads the full mapping again (patched
+     build). Neither calls PlayerSync, so neither downloads anything; files PlayerSync has not downloaded yet are
+     listed as missing.
+   * The **Data** line says whether what you see is current, incomplete, stale (PlayerSync received newer data than
+     it applied), still loading, or only what the game has loaded. The **Sync link** line says how PlayerSync knows
+     the character, and "ZoneSync joining for you" is your own PlayerSync setting (the per-character setting wins
+     over the global one), not whether this character is synced.
+   * Only with the patched PlayerSync build: **Reapply PlayerSync Data...** asks PlayerSync to reapply its last
+     received data, the same as its own context menu entry. This **may download** missing files, so it asks first.
+     The exporter never does this by itself.
    * Only files from PlayerSync's cache folder (read from PlayerSync's settings, never changed) or from your own
      Penumbra mod folder are offered.
    * Only modded files are offered. Mods often ship unchanged copies of game files, and PlayerSync syncs those too;

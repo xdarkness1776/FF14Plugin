@@ -16,7 +16,7 @@ public sealed class PlayerSyncIpcClient : IPlayerSyncExportApi
     private readonly IPluginLog _log;
     private readonly ICallGateSubscriber<int> _getApiVersion;
     private readonly ICallGateSubscriber<uint, string> _getCharacterState;
-    private readonly ICallGateSubscriber<uint, bool> _requestResync;
+    private readonly ICallGateSubscriber<uint, bool> _requestReapply;
     private readonly ICallGateSubscriber<string, string> _startExport;
     private readonly ICallGateSubscriber<string, string> _getExportStatus;
     private readonly ICallGateSubscriber<string, bool> _cancelExport;
@@ -27,7 +27,7 @@ public sealed class PlayerSyncIpcClient : IPlayerSyncExportApi
         _log = log;
         _getApiVersion = pi.GetIpcSubscriber<int>(ExportIpc.GetApiVersion);
         _getCharacterState = pi.GetIpcSubscriber<uint, string>(ExportIpc.GetCharacterState);
-        _requestResync = pi.GetIpcSubscriber<uint, bool>(ExportIpc.RequestResync);
+        _requestReapply = pi.GetIpcSubscriber<uint, bool>(ExportIpc.RequestReapply);
         _startExport = pi.GetIpcSubscriber<string, string>(ExportIpc.StartExport);
         _getExportStatus = pi.GetIpcSubscriber<string, string>(ExportIpc.GetExportStatus);
         _cancelExport = pi.GetIpcSubscriber<string, bool>(ExportIpc.CancelExport);
@@ -71,7 +71,15 @@ public sealed class PlayerSyncIpcClient : IPlayerSyncExportApi
     public CharacterStateDto GetCharacterState(uint entityId)
         => ExportJson.Deserialize<CharacterStateDto>(_getCharacterState.InvokeFunc(entityId)) ?? new CharacterStateDto { Lookup = CharacterLookup.NotSynced };
 
-    public bool RequestResync(uint entityId) => _requestResync.InvokeFunc(entityId);
+    /// <summary>The export IPC reports PlayerSync's whole applied mapping; there is nothing to load again.</summary>
+    public bool SupportsRescan => false;
+
+    public bool RequestRescan(uint entityId) => false;
+
+    public bool SupportsReapply => true;
+
+    /// <summary>PlayerSync's "reapply last received data". May download missing files; only for the explicit action.</summary>
+    public bool RequestReapply(uint entityId) => _requestReapply.InvokeFunc(entityId);
 
     public ExportStartResultDto StartExport(ExportRequestDto request)
         => ExportJson.Deserialize<ExportStartResultDto>(_startExport.InvokeFunc(ExportJson.Serialize(request)))

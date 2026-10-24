@@ -9,6 +9,14 @@ public sealed record CharacterResolution(CharacterStateDto State, IReadOnlyDicti
 /// Export jobs on the provider side: validation of requests, one job at a time, waiting for the
 /// synchronization to complete, and verified copies of only the files in the character's mapping.
 /// Lives in the shared contracts so that the logic PlayerSync runs is the logic the tests cover.
+/// <para>
+/// Lifecycle: while waiting, every read of the character checks that it is still found, still has the expected name
+/// (and home world, when both sides know it) and is not still synchronizing; any of these failing ends the job
+/// without copying. Once the copy phase starts, the file list is frozen: the copies continue if the character then
+/// leaves, because every file is verified against the frozen mapping's hash, and the manifest is built from that
+/// frozen state only. The destination is validated again before every file. A job removes only the temporary files it
+/// created, and the one-job slot is always released, also when that cleanup fails.
+/// </para>
 /// </summary>
 public sealed class ExportJobRegistry : IDisposable
 {
@@ -23,12 +31,16 @@ public sealed class ExportJobRegistry : IDisposable
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<DateTimeOffset> _clock;
     private readonly Action<Exception, string>? _log;
+    private readonly Action<string>? _deleteTempFile;
 
     /// <param name="resolve">Builds the current state and file map of a character by EntityId.</param>
     /// <param name="forbiddenRoots">Folders exports may never be written into.</param>
+    /// <param name="deleteTempFile">Deletes one temporary file during cleanup (tests replace it); defaults to <see cref="File.Delete"/>.</param>
     public ExportJobRegistry(Func<uint, CharacterResolution> resolve, Func<IEnumerable<string?>> forbiddenRoots,
-        Func<TimeSpan, CancellationToken, Task>? delay = null, Func<DateTimeOffset>? clock = null, Action<Exception, string>? log = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null, Func<DateTimeOffset>? clock = null, Action<Exception, string>? log = null,
+        Action<string>? deleteTempFile = null)
     {
+        _deleteTempFile = deleteTempFile;
         _resolve = resolve;
         _forbiddenRoots = forbiddenRoots;
         _delay = delay ?? Task.Delay;
@@ -56,11 +68,24 @@ public sealed class ExportJobRegistry : IDisposable
 
         if (!_slot.Wait(0)) return new() { Error = "Another export is still running." };
 
-        var job = new Job(Guid.NewGuid().ToString("N"), request, CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token), _clock());
-        _jobs[job.Id] = job;
-        Prune();
-        LastJobTask = Task.Run(() => RunAsync(job));
-        return new() { Accepted = true, JobId = job.Id };
+        try
+        {
+            var job = new Job(Guid.NewGuid().ToString("N"), request, CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token), _clock())
+            {
+                TempFiles = new TempFileLedger(_deleteTempFile),
+            };
+            _jobs[job.Id] = job;
+            Prune();
+            LastJobTask = Task.Run(() => RunAsync(job));
+            return new() { Accepted = true, JobId = job.Id };
+        }
+        catch (Exception ex)
+        {
+            // The job never started, so nothing else will release the slot.
+            _slot.Release();
+            _log?.Invoke(ex, "Export job could not be started");
+            return new() { Error = "The export could not be started: " + ex.Message };
+        }
     }
 
     public ExportJobStatusDto GetStatus(string? jobId)
@@ -106,18 +131,32 @@ public sealed class ExportJobRegistry : IDisposable
                     return;
                 }
 
+                if (job.Request.ExpectedHomeWorld != null && state.HomeWorld != null
+                                                          && !string.Equals(state.HomeWorld, job.Request.ExpectedHomeWorld, StringComparison.OrdinalIgnoreCase))
+                {
+                    job.Set(ExportJobPhase.Failed, $"The game object now belongs to {state.PlayerName} of {state.HomeWorld}, not of {job.Request.ExpectedHomeWorld}. " +
+                                                   "Reopen the export window for the character you want.");
+                    return;
+                }
+
                 if (state.SyncState is SyncState.Complete or SyncState.CompleteWithMissing) break;
                 if (_clock() > deadline)
                 {
                     job.State = state;
-                    job.Set(ExportJobPhase.Failed, $"Synchronization did not finish in time (state: {state.SyncState}). Nothing was exported.");
+                    job.Set(ExportJobPhase.Failed, state.SyncState == SyncState.Stale
+                        ? "PlayerSync has received newer data for this character than it applied, and did not apply it in time. Nothing was exported. " +
+                          "The exporter does not reapply data by itself; wait for PlayerSync, or use Reapply PlayerSync Data (which may download files)."
+                        : $"Synchronization did not finish in time (state: {state.SyncState}). Nothing was exported.");
                     return;
                 }
 
                 await _delay(TimeSpan.FromMilliseconds(500), token).ConfigureAwait(false);
             }
 
+            // From here on the mapping is frozen; the character leaving no longer stops the copies.
             job.State = resolution.State;
+            if (job.Request.ExpectedHomeWorld != null && resolution.State.HomeWorld == null)
+                resolution.State.Notes.Add($"The character's home world could not be confirmed by the source; it was identified by its name and game object only (expected {job.Request.ExpectedHomeWorld}).");
             var files = job.Request.CacheHashes.Distinct(StringComparer.OrdinalIgnoreCase)
                 .Select(h => new ExportFileResultDto { CacheHash = h.ToUpperInvariant(), Outcome = FileExportOutcome.Pending }).ToList();
             job.SetFiles(files, files.Sum(f => resolution.Files.TryGetValue(f.CacheHash, out var rf) ? SafeLength(rf.Path) : 0));
@@ -140,9 +179,23 @@ public sealed class ExportJobRegistry : IDisposable
                     continue;
                 }
 
+                // A link swapped into the destination after the job started must not redirect the next write.
+                var destinationError = ExportPathPolicy.ValidateDestination(job.Request.DestinationDirectory, _forbiddenRoots());
+                if (destinationError != null)
+                {
+                    foreach (var rest in files.Where(f => f.Outcome == FileExportOutcome.Pending))
+                    {
+                        rest.Outcome = FileExportOutcome.Failed;
+                        rest.Error = destinationError;
+                    }
+
+                    job.Set(ExportJobPhase.Failed, "The destination is no longer allowed: " + destinationError);
+                    return;
+                }
+
                 file.FileName = ExportPathPolicy.CacheFileName(file.CacheHash, source.Extension);
                 var result = await VerifiedFileCopier.CopyAsync(source.Path, job.Request.DestinationDirectory, file.FileName,
-                    file.CacheHash, progress, token).ConfigureAwait(false);
+                    file.CacheHash, progress, token, ledger: job.TempFiles).ConfigureAwait(false);
                 file.Outcome = result.Outcome;
                 file.Error = result.Error;
                 file.Size = result.Size;
@@ -169,8 +222,23 @@ public sealed class ExportJobRegistry : IDisposable
         }
         finally
         {
-            VerifiedFileCopier.CleanupTempFiles(job.Request.DestinationDirectory);
-            _slot.Release();
+            try
+            {
+                var failed = job.TempFiles.DeleteAll();
+                if (failed.Count > 0)
+                    job.AddNote($"{failed.Count} temporary file(s) of this export could not be removed (for example {failed[0].Path}: {failed[0].Error}).");
+            }
+            catch (Exception ex)
+            {
+                // Cleanup must never keep the slot taken or hide the job's own outcome.
+                _log?.Invoke(ex, "Export job cleanup failed");
+                job.AddNote("Temporary files of this export could not be removed: " + ex.Message);
+            }
+            finally
+            {
+                job.Finish();
+                _slot.Release();
+            }
         }
     }
 
@@ -219,23 +287,52 @@ public sealed class ExportJobRegistry : IDisposable
         public CancellationTokenSource Cts { get; } = cts;
         public DateTimeOffset Created { get; } = created;
         public CharacterStateDto? State { get; set; }
+        public TempFileLedger TempFiles { get; init; } = new();
+        private bool _closed;
 
         public bool IsFinished
         {
             get
             {
-                lock (_lock) return _phase is ExportJobPhase.Completed or ExportJobPhase.CompletedWithIssues or ExportJobPhase.Failed or ExportJobPhase.Cancelled;
+                // Finished once cleanup ran too, so a caller never sees a final result while temporary files are still being removed.
+                lock (_lock) return _closed;
             }
         }
 
+        /// <summary>Sets the phase. The first final phase wins; nothing changes it afterwards, nor after <see cref="Finish"/>.</summary>
         public void Set(ExportJobPhase phase, string message)
         {
             lock (_lock)
             {
+                if (_closed || IsFinal(_phase)) return;
                 _phase = phase;
                 _message = message;
             }
         }
+
+        /// <summary>Appends to the message without changing the outcome (cleanup problems).</summary>
+        public void AddNote(string note)
+        {
+            lock (_lock) _message = string.IsNullOrEmpty(_message) ? note : _message + " " + note;
+        }
+
+        /// <summary>Called once the job ran to its end; a job that somehow never set a final phase is reported as failed.</summary>
+        public void Finish()
+        {
+            lock (_lock)
+            {
+                if (!IsFinal(_phase))
+                {
+                    _phase = ExportJobPhase.Failed;
+                    _message = "The export ended without a result.";
+                }
+
+                _closed = true;
+            }
+        }
+
+        private static bool IsFinal(ExportJobPhase phase)
+            => phase is ExportJobPhase.Completed or ExportJobPhase.CompletedWithIssues or ExportJobPhase.Failed or ExportJobPhase.Cancelled;
 
         public void SetFiles(List<ExportFileResultDto> files, long bytesTotal)
         {
@@ -253,13 +350,14 @@ public sealed class ExportJobRegistry : IDisposable
         {
             lock (_lock)
             {
-                var finished = _phase is ExportJobPhase.Completed or ExportJobPhase.CompletedWithIssues or ExportJobPhase.Failed or ExportJobPhase.Cancelled;
+                var finished = _closed;
                 return new ExportJobStatusDto
                 {
                     JobId = Id,
                     Found = true,
-                    Phase = _phase,
-                    Message = _message,
+                    // Until cleanup is done the outcome is held back.
+                    Phase = finished || !IsFinal(_phase) ? _phase : ExportJobPhase.Copying,
+                    Message = finished || !IsFinal(_phase) ? _message : "Removing temporary files.",
                     FilesTotal = _files.Count,
                     FilesDone = Volatile.Read(ref _filesDone),
                     BytesTotal = _bytesTotal,

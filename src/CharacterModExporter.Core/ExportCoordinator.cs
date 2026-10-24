@@ -77,12 +77,11 @@ public sealed class ExportCoordinator
         if (free.HasValue && needed > 0 && free.Value < needed + (needed / 10))
             return Fail($"Not enough free space: about {FormatBytes(needed)} needed, {FormatBytes(free.Value)} available.", layout);
 
-        VerifiedFileCopier.CleanupTempFiles(layout.AssetsFolder);
-
         var start = _api.StartExport(new ExportRequestDto
         {
             EntityId = target.EntityId,
             ExpectedPlayerName = target.Name,
+            ExpectedHomeWorld = target.World,
             DestinationDirectory = layout.AssetsFolder,
             CacheHashes = hashes,
             SyncWaitSeconds = settings.SyncWaitSeconds,

@@ -11,10 +11,10 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 3 | Live mapping | B wears a mod; open window | Game paths match B's gear; they match Penumbra's On-Screen tab for B (files from PlayerSync's cache). |
 | 3a | Transient files | B uses a modded emote while the window is open, then Refresh | The emote's animation/VFX files are added to the list. |
 | 4 | Waits for loading | B switches gear, immediately Export Selected | Phase "Waiting"; the export starts once no new files appeared for about 5 seconds. |
-| 5 | Scan | Press Scan Character Resources | B is redrawn; state shows "still loading" and then "loaded"; the exporter makes no network requests. |
+| 5 | Scan | Note the PlayerSync log and a network monitor (for example Resource Monitor filtered to the game process); press Refresh, then Scan Character Resources | Stock: B is redrawn; state shows "still loading" and then "loaded". Patched: the list is read again. Both: **zero** download entries in PlayerSync's log and no new transfer to the file server caused by the button. |
 | 6 | Cache reuse | Export B twice; Scan in between | Second export: AlreadyPresentIdentical; PlayerSync log shows no download for cached hashes. |
 | 7 | Only B's files | Export B with C nearby | Every Assets file is in B's manifest with game paths; none of C's. |
-| 8 | Cache untouched | Hash/list PlayerSync cache, FileCache.csv and PlayerSync's config.json before and after an export and a Scan | Identical. |
+| 8 | Cache untouched | Hash/list PlayerSync cache, FileCache.csv and PlayerSync's config.json before and after a Refresh, a Scan and an export | Identical (file list, sizes, times, hashes). |
 | 9 | Custom parent | Settings → Choose Parent Folder `D:\My FFXIV Mods` → Apply | Export creates `D:\My FFXIV Mods\FFXIV Character Mod Exports\B_World\...`. |
 | 10 | Auto-creation | Delete the export root, export | Root, character and Assets folders are created. |
 | 11 | Persistence | Restart game | Settings show the chosen folder. |
@@ -45,6 +45,22 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 28 | MCDF | Save your own character as `.mcdf` in PlayerSync; Open MCDF Snapshot... in an export window | Shown as "Saved snapshot (not live)"; matching runs; nothing is applied to any character. |
 | 29 | Library safety | Choose the export folder (or a folder inside it) as the library | Refused with a message. |
 
+## Live acceptance checklist (0.6 reliability fixes)
+
+Status: **not run** for every row. Record the actual outcome next to each row when it is run.
+
+| # | Check | Steps | Expected | Outcome |
+|---|---|---|---|---|
+| 50 | Scan makes no transfers | Patched build; B has a missing file; snapshot cache, FileCache.csv and config.json; Scan | Missing file still listed as missing; no download in the log; snapshot identical | not run |
+| 51 | Reapply is explicit | Patched build; press Reapply PlayerSync Data..., then Cancel; then again and confirm | Cancel: nothing happens. Confirm: PlayerSync reapplies (the log may show downloads); the list updates | not run |
+| 52 | Stale data | Patched build; export while B just changed outfit and PlayerSync has not applied it yet | Data line says stale; the export fails with a message naming the reapply action; nothing reapplied automatically | not run |
+| 53 | Junction refused | Windows: `mklink /J D:\Exports\link <PlayerSync cache>`; choose `D:\Exports\link` as parent | Refused: "goes through a link or junction"; nothing written into the cache | not run |
+| 54 | Game folder refused | Choose a folder inside the game installation as parent | Refused | not run |
+| 55 | Other job's partial file | Put `x.tex.abcdef12.cmx-partial` in Assets; export | That file is still there afterwards; the export's own partial files are gone | not run |
+| 56 | Same name, other world | If available: two characters with the same name on different worlds | The export window for one never lists or exports the other's files | not run |
+| 57 | ZoneSync line | PlayerSync: global ZoneSync joining off, per-character on for your current character | Window: "ZoneSync joining for you: on (set for this character)" | not run |
+| 58 | v1 build ignored | Load a PlayerSync build with the v1 export IPC | Source line says the v1 IPC is not compatible and is not used; files are read through Penumbra | not run |
+
 ## Live acceptance checklist (0.5 capture reliability)
 
 Status: **not run** for every row. Record the actual outcome and an `/xllog` excerpt next to each row when it is run.
@@ -74,6 +90,17 @@ Do not mark a row passed from these expectations.
 | 49 | Unload | Disable the exporter while a window is open and B is tracked | No errors in `/xllog`; no event handlers left (re-enable works) | not run |
 
 ## Automated tests (run in the development environment)
+
+Last run for 0.6.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 242 passed, 0 failed;
+`CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. `playersync-fork/apply.sh` on a fresh checkout of
+upstream b2f8ce8 applied the v2 patch and the patched PlayerSync built with 0 errors. New in 0.6: destination checks
+through symbolic links (Linux symlinks; Windows junctions use the same .NET link API but were not exercised),
+traversal, files in the path, an unavailable drive (simulated), the common forbidden roots, and a direct IPC request
+into the cache; per-job temporary files, cleanup that throws, another job's partial file, cancellation and the slot
+being released for the next job; the frozen mapping, the per-file destination re-check, a same-name character from
+another world and an unconfirmed world; Refresh, Scan and Export never reapplying; stale data; mapping freshness;
+target identity; the effective ZoneSync setting; and the Penumbra watch list (replacement, despawn, zone change,
+forget, stale events). The earlier history follows.
 
 Last run for 0.5.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 193 passed, 0 failed;
 `CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. The patched PlayerSync (`playersync-fork/apply.sh`,

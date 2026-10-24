@@ -171,14 +171,66 @@ public class VerifiedFileCopierTests
     }
 
     [Fact]
-    public void CleanupOnlyRemovesOwnTempFiles()
+    public void LedgerDeletesOnlyItsOwnTempFiles()
     {
         using var dir = new TempDir();
+        var mine = Path.Combine(dir.Path, "x.tex.1234" + VerifiedFileCopier.TempSuffix);
+        var other = Path.Combine(dir.Path, "y.tex.5678" + VerifiedFileCopier.TempSuffix);
         File.WriteAllText(Path.Combine(dir.Path, "keep.tex"), "a");
-        File.WriteAllText(Path.Combine(dir.Path, "x.tex.1234" + VerifiedFileCopier.TempSuffix), "b");
+        File.WriteAllText(mine, "b");
+        File.WriteAllText(other, "another job's file");
+        var ledger = new TempFileLedger();
+        ledger.Add(mine);
 
-        Assert.Equal(1, VerifiedFileCopier.CleanupTempFiles(dir.Path));
+        Assert.Empty(ledger.DeleteAll());
+        Assert.False(File.Exists(mine));
+        Assert.True(File.Exists(other));
         Assert.True(File.Exists(Path.Combine(dir.Path, "keep.tex")));
+        Assert.Empty(ledger.Pending);
+    }
+
+    [Fact]
+    public void LedgerReportsDeleteFailuresAndKeepsGoing()
+    {
+        using var dir = new TempDir();
+        var a = Path.Combine(dir.Path, "a" + VerifiedFileCopier.TempSuffix);
+        var b = Path.Combine(dir.Path, "b" + VerifiedFileCopier.TempSuffix);
+        File.WriteAllText(a, "a");
+        File.WriteAllText(b, "b");
+        var ledger = new TempFileLedger(p =>
+        {
+            if (p == a) throw new IOException("locked");
+            File.Delete(p);
+        });
+        ledger.Add(a);
+        ledger.Add(b);
+
+        var failures = ledger.DeleteAll();
+
+        Assert.Single(failures);
+        Assert.Equal(a, failures[0].Path);
+        Assert.Contains("locked", failures[0].Error);
+        Assert.False(File.Exists(b));
+        Assert.Equal([a], ledger.Pending);
+    }
+
+    [Fact]
+    public async Task CopyLeavesNoTempFileAndAnotherPartialFileUntouched()
+    {
+        using var dir = new TempDir();
+        var src = Path.Combine(dir.Path, "src.tex");
+        File.WriteAllText(src, "data");
+        var outDir = dir.Sub("out");
+        var foreign = Path.Combine(outDir, "a.tex.9999" + VerifiedFileCopier.TempSuffix);
+        File.WriteAllText(foreign, "another job's partial file");
+        var ledger = new TempFileLedger();
+
+        var result = await VerifiedFileCopier.CopyAsync(src, outDir, "a.tex", null, null, CancellationToken.None, ledger: ledger);
+
+        Assert.Equal(FileExportOutcome.Copied, result.Outcome);
+        Assert.Empty(ledger.Pending);
+        Assert.True(File.Exists(foreign));
+        Assert.Single(Directory.GetFiles(outDir, "*" + VerifiedFileCopier.TempSuffix));
     }
 
     private sealed class CancelAfterFirstChunk(CancellationTokenSource cts) : IProgress<long>

@@ -27,8 +27,26 @@ public interface IPlayerSyncExportApi
     /// <summary>Why the source cannot be used, valid after <see cref="Probe"/> returned something other than Available.</summary>
     string UnavailableMessage { get; }
 
+    /// <summary>Read-only: what the source knows about the character now. Never starts a synchronization or a download.</summary>
     CharacterStateDto GetCharacterState(uint entityId);
-    bool RequestResync(uint entityId);
+
+    /// <summary>True when <see cref="RequestRescan"/> does something (the Penumbra source redraws the character).</summary>
+    bool SupportsRescan { get; }
+
+    /// <summary>
+    /// Makes the game load the character's files again so they can be observed, without involving PlayerSync's network
+    /// side: no synchronization, no download, no reapplication. False when not supported or the character is not synced.
+    /// </summary>
+    bool RequestRescan(uint entityId);
+
+    /// <summary>True when <see cref="RequestReapply"/> is available (only the PlayerSync export IPC).</summary>
+    bool SupportsReapply { get; }
+
+    /// <summary>
+    /// Asks PlayerSync to reapply the data it last received for the character. PlayerSync reuses cached files but
+    /// <b>downloads missing ones</b>. Only for the explicit user action that says so.
+    /// </summary>
+    bool RequestReapply(uint entityId);
     ExportStartResultDto StartExport(ExportRequestDto request);
     ExportJobStatusDto GetExportStatus(string jobId);
     bool CancelExport(string jobId);

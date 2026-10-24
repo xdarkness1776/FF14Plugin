@@ -23,11 +23,15 @@ public sealed class CharacterSelectionService(IObjectTable objectTable, IFramewo
     }
 
     /// <summary>
-    /// True when the game object with the target's EntityId still exists and still has the same name.
-    /// Runs on the framework thread because it reads the object table.
+    /// True when the game object with the target's EntityId still exists and is the same character: same name, and
+    /// the same home world when both are known (<see cref="TargetIdentity"/>). Runs on the framework thread because it
+    /// reads the object table.
     /// </summary>
     public Task<bool> IsStillPresentAsync(ExportTarget target)
         => framework.RunOnFrameworkThread(() =>
-            objectTable.SearchByEntityId(target.EntityId) is IPlayerCharacter pc
-            && string.Equals(pc.Name.TextValue, target.Name, StringComparison.Ordinal));
+        {
+            if (objectTable.SearchByEntityId(target.EntityId) is not IPlayerCharacter pc) return false;
+            var world = pc.HomeWorld.ValueNullable?.Name.ToString();
+            return TargetIdentity.Compare(target, pc.Name.TextValue, string.IsNullOrWhiteSpace(world) ? null : world) != TargetIdentity.Result.Different;
+        });
 }

@@ -18,8 +18,13 @@ Penumbra temporary collection, and Penumbra reports which local file stands behi
 loads. The limit: only files the game has loaded are listed, so animations, VFX and sounds appear once they have
 played, and "finished" means no new files appeared for a few seconds.
 
-What it does not do: it never downloads anything, never pairs with anyone, never scans the whole cache, never writes
-to PlayerSync's cache or settings, and never installs or enables mods.
+What it does not do: it never downloads anything by itself, never pairs with anyone, never scans the whole cache,
+never writes to PlayerSync's cache or settings, and never installs or enables mods. Refresh and Scan are read-only.
+With the optional patched PlayerSync, one separate, confirmed action (**Reapply PlayerSync Data...**) asks PlayerSync to
+reapply what it received, which may download missing files.
+
+Exports are only written into a folder you choose, never into or through (by a link or junction) PlayerSync's cache,
+Penumbra's mods, the game folder, Dalamud or plugin folders.
 
 [playersync-fork/](playersync-fork/) keeps an optional PlayerSync patch with a versioned export IPC (complete mapping,
 real sync state). If a PlayerSync build with it is loaded, the exporter uses it automatically. It is unofficial,
@@ -36,6 +41,7 @@ not endorsed by the PlayerSync team, and not required.
 | `.pmp` import into Penumbra (full and per item) | structure validated, real import not tested yet |
 | Original package library, matching, original export, MCDF reader | unit tested (synthetic packages for every group type, a real 156 MB package); **not tested in game yet** |
 | File activity tracking, zone-change reset, MCDF validation (0.5) | unit tested; **not tested in game yet** |
+| Read-only Scan vs Reapply, link-aware destination checks, per-job cleanup, home-world identity, effective ZoneSync setting (0.6) | unit tested; patched PlayerSync builds; **not tested in game yet** |
 
 ## Docs
 

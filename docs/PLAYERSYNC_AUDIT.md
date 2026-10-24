@@ -74,7 +74,8 @@ See `playersync-fork/README.md`. The patch (about 260 added lines, nothing remov
 * `PairHandler`: after a successful application, keeps a read-only `ExportSnapshot` (applied data, the final
   `moddedPaths`, compression redirects, validation exclusions) and exposes `IsSyncInProgress`.
 * `Pair`: exposes the handler and the filtered last received data (same filter PlayerSync applies).
-* `ExportIpcProvider`: registers `PlayerSync.Export.*` gates (version, state, resync, start/status/cancel export).
+* `ExportIpcProvider`: registers `PlayerSync.Export.*` gates (version, state, resync, start/status/cancel export;
+  since 0.6 the resync gate is `RequestReapply`, see "Update (0.6)").
   Validation, waiting and copying are in the shared `PlayerSyncExport.Contracts` code, which is unit tested.
 * Resync uses `Pair.ApplyLastReceivedData(forced: true)`, the same call as PlayerSync's "Reapply last data" menu
   item, so cached files are reused and only missing files go through PlayerSync's download manager.
@@ -103,6 +104,48 @@ PlayerSync applied from Penumbra instead:
   available (as before); file swaps resolve to game paths and are not listed.
 
 The export IPC patch stays available as an optional source with the complete mapping and the real sync state.
+
+## Update (0.6): reliability and integration fixes
+
+Re-checked against `b2f8ce8` (still the latest upstream revision when this was written). Findings, each confirmed in
+the code before it was changed:
+
+1. **"Scan" could download.** With the patched build, the window's Scan button called the IPC gate
+   `PlayerSync.Export.RequestResync`, which runs `Pair.ApplyLastReceivedData(forced: true)`. That is PlayerSync's
+   download and apply pipeline: cached files are reused, but missing ones are downloaded. A button presented as a
+   rescan could therefore cause network transfers. Now:
+   * **Refresh** and **Scan** are read-only. With the export IPC, Scan just reads the mapping again (the IPC already
+     reports all of it); with stock PlayerSync it is Penumbra's local redraw. Neither calls PlayerSync.
+   * The IPC is **v2**: `RequestResync` is gone and `PlayerSync.Export.RequestReapply` replaces it under a name that
+     says what it does. The exporter calls it only from **Reapply PlayerSync Data...**, which asks for confirmation
+     and says it may download. A v1 build is reported as incompatible and not used (the exporter falls back to
+     Penumbra), so the old gate can never be called by a new exporter.
+   * A stale mapping (PlayerSync received newer data than it applied) is shown as stale, and an export waiting on it
+     fails with a message that names the reapply action instead of reapplying by itself.
+2. **Destination checks were lexical.** A symbolic link or junction could point an allowed-looking folder into the
+   PlayerSync cache, Penumbra's mods or a plugin folder, and the patched build's provider did not forbid the game
+   folder or the other plugins' installation folders. `ExportPathPolicy.ValidateDestination` now resolves every
+   existing link in the path (and in each forbidden folder), rejects files in the path and unavailable drives, and is
+   called again before every file. `CommonForbiddenRoots` (game install, `pluginConfigs`, Dalamud, the plugin's own
+   and every installed plugin's folder) is used by both the exporter and the IPC provider, so a direct IPC call gets
+   the same checks. A link swapped in between the last check and a write (a time-of-check/time-of-use gap) is not
+   excluded; the per-file re-check narrows it to one file.
+3. **Cleanup deleted any `*.cmx-partial` file** in the folder, including another running export's, and an exception
+   during cleanup in the job's `finally` skipped releasing the one-job slot (no later export could start). Each job
+   now tracks its own temporary files (`TempFileLedger`) and removes only those; failures are logged and added to the
+   job's message without changing its outcome; the slot is always released.
+4. **Identity was by name only.** Two characters with the same name on different worlds could be confused. The home
+   world is now captured at the start, sent in the request (`ExpectedHomeWorld`), reported by both sources, and
+   compared. The Penumbra source swaps in a new tracker when a capture starts over (see CAPTURE_RELIABILITY.md).
+5. **ZoneSync state ignored the per-character override.** See the "Effective joining setting" note in
+   CAPTURE_RELIABILITY.md. `CharacterStateDto.ZoneSyncEnabled` is replaced by `ZoneSyncJoiningGlobal`,
+   `ZoneSyncJoiningOverride` and `ZoneSyncJoiningEffective`.
+
+Lifecycle policy (also in `ExportJobRegistry`'s documentation): while a job waits for synchronization, every read
+checks the character is still found, still has the expected name and world, and is no longer loading; any failure
+ends the job without copying. Once copying starts the mapping is frozen: the character leaving does not stop the
+copies, because every file is verified against the frozen mapping's hash, and nothing read later can change which
+files belong to the job.
 
 ## Update (0.5): capture reliability
 

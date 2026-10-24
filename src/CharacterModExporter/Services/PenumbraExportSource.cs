@@ -34,8 +34,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     private readonly RedrawObject _redraw;
     private readonly GetModDirectory _modDirectory;
     private readonly EventSubscriber<nint, string, string> _resolved;
-    private readonly ConcurrentDictionary<uint, Watched> _watched = new();
-    private readonly ConcurrentDictionary<nint, Watched> _byAddress = new();
+    private readonly CharacterWatchList _watch = new();
     private readonly FileVerificationCache _hashes = new();
     private readonly ExportJobRegistry _jobs;
     private readonly VanillaFileComparer _vanilla;
@@ -68,42 +67,28 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     /// next. Nothing recorded before stays valid, so every watched character starts over and is found again by its
     /// entity id when the window next reads it.
     /// </summary>
-    private void OnZoneChanged<T>(T _)
-    {
-        foreach (var (_, watched) in _watched)
-        {
-            _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
-            watched.Address = nint.Zero;
-            watched.Tracker.Reset();
-        }
-    }
+    private void OnZoneChanged<T>(T _) => _watch.ZoneChanged();
 
     /// <summary>
-    /// Every frame, checks that every watched character still lives at the address its Penumbra events are matched by.
-    /// When it despawned or moved, another object can take the address, and its files must never be recorded for it.
-    /// Checking every frame keeps the window in which such an event could be misattributed to one frame; it is a
-    /// dictionary lookup per watched character (only characters opened in the window are watched).
+    /// Every frame, checks that every watched character is still the same object at the address its Penumbra events
+    /// are matched by (same name and home world). When it despawned, moved or was replaced, its capture starts over,
+    /// so an object that takes over the address is never recorded for it for longer than one frame. One lookup per
+    /// watched character; only characters with an open window are watched.
     /// </summary>
     private void OnFrameworkUpdate(IFramework framework)
     {
-        if (_watched.IsEmpty) return;
-        foreach (var (entityId, watched) in _watched)
+        if (_watch.Count == 0) return;
+        foreach (var entityId in _watch.EntityIds)
         {
             var current = _objects.SearchByEntityId(entityId) as IPlayerCharacter;
-            if (current != null ? current.Address == watched.Address : watched.Address == nint.Zero) continue;
-            _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
-            watched.Tracker.Reset();
-            if (current == null)
-            {
-                watched.Address = nint.Zero;
-                continue;
-            }
-
-            // Respawned at another address: follow it; the game loads its files again and they are recorded afresh.
-            watched.Address = current.Address;
-            watched.Name = current.Name.TextValue;
-            _byAddress[current.Address] = watched;
+            _watch.Check(entityId, current?.Address, current?.Name.TextValue, WorldOf(current));
         }
+    }
+
+    private static string? WorldOf(IPlayerCharacter? pc)
+    {
+        var world = pc?.HomeWorld.ValueNullable?.Name.ToString();
+        return string.IsNullOrWhiteSpace(world) ? null : world;
     }
 
     public string SourceLabel => "Official PlayerSync, files read through Penumbra";
@@ -137,15 +122,25 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
 
     public CharacterStateDto GetCharacterState(uint entityId) => Resolve(entityId).State;
 
-    /// <summary>Redraws the character through Penumbra so the game loads all its resources again. Downloads nothing.</summary>
-    public bool RequestResync(uint entityId)
+    public bool SupportsRescan => true;
+
+    /// <summary>
+    /// Redraws the character through Penumbra so the game loads all its resources again. Penumbra's redraw is local to
+    /// the game; nothing of PlayerSync is called, so nothing is downloaded or reapplied.
+    /// </summary>
+    public bool RequestRescan(uint entityId)
     {
         var info = Capture(entityId, readResources: false);
         if (info == null || info.Handled != true) return false;
-        info.Watched.Tracker.MarkChanging();
+        info.Tracker.MarkChanging();
         _framework.RunOnFrameworkThread(() => _redraw.Invoke(info.ObjectIndex, RedrawType.Redraw)).GetAwaiter().GetResult();
         return true;
     }
+
+    /// <summary>Stock PlayerSync offers no IPC to reapply data; its own context menu does that.</summary>
+    public bool SupportsReapply => false;
+
+    public bool RequestReapply(uint entityId) => false;
 
     public ExportStartResultDto StartExport(ExportRequestDto request) => _jobs.Start(request);
     public ExportJobStatusDto GetExportStatus(string jobId) => _jobs.GetStatus(jobId);
@@ -158,12 +153,14 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
             return new(new CharacterStateDto { Lookup = CharacterLookup.NotSynced, LinkDetailsKnown = false }, new Dictionary<string, ResolvedFile>());
 
         // The capture's own tracker: the window may be closed (and the character forgotten) meanwhile.
-        var tracker = info.Watched.Tracker;
-        return PenumbraResolution.Build(info.Name, info.Handled, tracker.Snapshot(), CacheFolder(), ModDirectory(), _hashes,
+        var tracker = info.Tracker;
+        var resolution = PenumbraResolution.Build(info.Name, info.Handled, tracker.Snapshot(), CacheFolder(), ModDirectory(), _hashes,
             tracker.LastChangeUtc, DateTimeOffset.UtcNow, _vanilla, tracker.Truncated);
+        resolution.State.HomeWorld = info.HomeWorld;
+        return resolution;
     }
 
-    private sealed record Captured(string Name, int ObjectIndex, bool? Handled, Watched Watched);
+    private sealed record Captured(string Name, string? HomeWorld, int ObjectIndex, bool? Handled, LoadedResourceTracker Tracker);
 
     /// <summary>Reads the game object (and optionally Penumbra's on-screen resources) on the framework thread.</summary>
     private Captured? Capture(uint entityId, bool readResources)
@@ -171,13 +168,14 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
         return _framework.RunOnFrameworkThread(() =>
         {
             if (_objects.SearchByEntityId(entityId) is not IPlayerCharacter pc) return null;
-            var watched = Watch(entityId, pc.Address, pc.Name.TextValue);
+            var world = WorldOf(pc);
+            var tracker = _watch.Watch(entityId, pc.Address, pc.Name.TextValue, world);
             var handled = _playerSync.GetHandledAddresses()?.Contains(pc.Address);
             if (readResources && handled == true)
             {
                 try
                 {
-                    watched.Tracker.Merge(_resourcePaths.Invoke(pc.ObjectIndex).FirstOrDefault());
+                    tracker.Merge(_resourcePaths.Invoke(pc.ObjectIndex).FirstOrDefault());
                 }
                 catch (Exception ex) when (ex is IpcNotReadyError or IpcError)
                 {
@@ -185,42 +183,21 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
                 }
             }
 
-            return new Captured(pc.Name.TextValue, pc.ObjectIndex, handled, watched);
+            return new Captured(pc.Name.TextValue, world, pc.ObjectIndex, handled, tracker);
         }).GetAwaiter().GetResult();
-    }
-
-    private Watched Watch(uint entityId, nint address, string name)
-    {
-        var watched = _watched.GetOrAdd(entityId, _ => new Watched(address, name));
-        if (watched.Address != address || !string.Equals(watched.Name, name, StringComparison.Ordinal))
-        {
-            // The entity id now points at a respawned or different object: start over.
-            _byAddress.TryRemove(watched.Address, out _);
-            watched.Address = address;
-            watched.Name = name;
-            watched.Tracker.Reset();
-        }
-
-        _byAddress[address] = watched;
-        return watched;
     }
 
     /// <summary>
     /// Stops watching a character (its window was closed): its events are no longer recorded and what was recorded is
     /// dropped, so watching stays bounded by the open windows. Reading the character again starts a new capture.
     /// </summary>
-    public void Forget(uint entityId)
-    {
-        if (!_watched.TryRemove(entityId, out var watched)) return;
-        _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
-        watched.Tracker.Reset();
-    }
+    public void Forget(uint entityId) => _watch.Forget(entityId);
 
     /// <summary>Penumbra event, raised on game threads for every redirected resource of an identified object.</summary>
     private void OnResolved(nint gameObject, string gamePath, string fullPath)
     {
-        if (gameObject != nint.Zero && _byAddress.TryGetValue(gameObject, out var watched))
-            watched.Tracker.Record(gamePath, fullPath);
+        // The tracker is taken once: if the capture starts over meanwhile, this event goes to the discarded one.
+        _watch.TrackerAt(gameObject)?.Record(gamePath, fullPath);
     }
 
     private string? CacheFolder() => PlayerSyncConfigReader.ReadCacheFolder(_pi.ConfigDirectory.Parent?.FullName);
@@ -247,10 +224,4 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
         _jobs.Dispose();
     }
 
-    private sealed class Watched(nint address, string name)
-    {
-        public nint Address { get; set; } = address;
-        public string Name { get; set; } = name;
-        public LoadedResourceTracker Tracker { get; } = new();
-    }
 }

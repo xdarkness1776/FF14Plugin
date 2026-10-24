@@ -91,9 +91,17 @@ public sealed class ExportWindow : Window, IDisposable
                 CharacterLookup.Paused => "paused in PlayerSync",
                 _ => "not synced by PlayerSync in this area",
             };
-            ImGui.TextUnformatted(state.LinkDetailsKnown
-                ? $"Sync link: {link}    ZoneSync enabled: {(state.ZoneSyncEnabled ? "yes" : "no")}"
-                : $"Sync link: {link}");
+            ImGui.TextUnformatted($"Sync link: {link}" + (state.LinkDetailsKnown ? "    ZoneSync joining for you: " + DescribeZoneSync(state) : string.Empty));
+            if (state.LinkDetailsKnown)
+                Tooltip("Whether PlayerSync joins ZoneSync groups for the character you are logged in as: its per-character setting when there is one, " +
+                        "otherwise the global setting. It is not about this character: the sync link above says how this character is connected.");
+            var freshness = s.Freshness;
+            ImGui.TextColored(freshness switch
+            {
+                MappingFreshness.Current => ImGuiColors.HealerGreen,
+                MappingFreshness.Incomplete or MappingFreshness.LoadedOnly or MappingFreshness.Loading => ImGuiColors.DalamudYellow,
+                _ => ImGuiColors.DalamudRed,
+            }, "Data: " + Freshness.Describe(freshness));
             var syncColor = state.SyncState switch
             {
                 SyncState.Complete => ImGuiColors.HealerGreen,
@@ -127,6 +135,12 @@ public sealed class ExportWindow : Window, IDisposable
         }
     }
 
+    private static string DescribeZoneSync(CharacterStateDto state) => state.ZoneSyncJoiningEffective switch
+    {
+        null => "unknown",
+        var on => (on.Value ? "on" : "off") + (state.ZoneSyncJoiningOverride != null ? " (set for this character)" : " (global setting)"),
+    };
+
     private static string DescribeSync(SyncState state) => state switch
     {
         SyncState.Complete => "complete, every file is available locally",
@@ -153,11 +167,31 @@ public sealed class ExportWindow : Window, IDisposable
         using (ImRaii.Disabled(busy))
         {
             if (ImGui.Button("Refresh Character Resources")) _ = s.RefreshAsync();
-            Tooltip("Reads the character's current files again. Nothing is downloaded.");
+            Tooltip("Reads what is known about the character's files again. Read-only: PlayerSync is not asked to sync, download or reapply anything.");
             ImGui.SameLine();
-            if (ImGui.Button("Scan Character Resources")) _ = s.ResyncAsync();
-            Tooltip("Redraws the character so the game loads all of its files again, then lists them. Nothing is downloaded by the exporter. " +
-                "(With a PlayerSync build that has the export IPC, PlayerSync re-runs its normal sync instead.)");
+            if (ImGui.Button("Scan Character Resources")) _ = s.ScanAsync();
+            Tooltip(s.SupportsRescan
+                ? "Redraws the character in the game so all of its files load again, then lists them. Local only: PlayerSync is not asked to sync, download or reapply anything."
+                : "This source already reports PlayerSync's full mapping, so a scan is the same as a refresh. Nothing is downloaded.");
+            if (s.SupportsReapply)
+            {
+                ImGui.SameLine();
+                if (ImGui.Button("Reapply PlayerSync Data...")) ImGui.OpenPopup("##cmx-reapply");
+                Tooltip("Asks PlayerSync to reapply the data it last received for this character. PlayerSync may download missing files.");
+                if (ImGui.BeginPopup("##cmx-reapply"))
+                {
+                    ImGui.TextUnformatted("PlayerSync will reapply this character's last received data.\nFiles missing from its cache will be downloaded.");
+                    if (ImGui.Button("Reapply and allow downloads"))
+                    {
+                        _ = s.ReapplyAsync();
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    ImGui.SameLine();
+                    if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+                    ImGui.EndPopup();
+                }
+            }
             ImGui.SameLine();
             if (ImGui.Button("Select All Available")) s.SelectAllAvailable();
             ImGui.SameLine();

@@ -46,6 +46,7 @@ public sealed class FakePair
 {
     public uint EntityId { get; init; }
     public string Name { get; set; } = "Test Character";
+    public string? HomeWorld { get; set; }
     public bool Visible { get; set; } = true;
     public bool Paused { get; set; }
     public bool ZoneSyncOnly { get; set; } = true;
@@ -94,13 +95,17 @@ public sealed class FakePlayerSync : IPlayerSyncExportApi, IDisposable
     public bool Connected { get; set; } = true;
     public int ProvidedVersion { get; set; } = ExportIpc.ApiVersion;
     public bool Installed { get; set; } = true;
-    public int ResyncRequests { get; private set; }
+    public int ReapplyRequests { get; private set; }
+    public int RescanRequests { get; private set; }
+    public bool ZoneSyncGlobal { get; set; } = true;
+    public Dictionary<string, bool> ZoneSyncPerCharacter { get; } = new(StringComparer.Ordinal);
+    public string LocalPlayerName { get; set; } = "Local Player";
 
     /// <summary>Counts anything that would have caused a server transfer. The exporter must never cause one by itself.</summary>
     public int DownloadRequests { get; private set; }
 
-    /// <summary>Called when a resync is requested, to simulate PlayerSync's pipeline.</summary>
-    public Action<FakePair>? OnResync { get; set; }
+    /// <summary>Called when a reapply is requested, to simulate PlayerSync's download/apply pipeline.</summary>
+    public Action<FakePair>? OnReapply { get; set; }
 
     public CacheFile AddCacheFile(string extension, string content)
     {
@@ -121,7 +126,11 @@ public sealed class FakePlayerSync : IPlayerSyncExportApi, IDisposable
     public CharacterResolution Resolve(uint entityId)
     {
         var files = new Dictionary<string, ResolvedFile>(StringComparer.OrdinalIgnoreCase);
-        var state = new CharacterStateDto { ZoneSyncEnabled = true };
+        var (effective, overridden) = ZoneSyncSettings.Effective(ZoneSyncGlobal, ZoneSyncPerCharacter, LocalPlayerName);
+        var state = new CharacterStateDto
+        {
+            ZoneSyncJoiningGlobal = ZoneSyncGlobal, ZoneSyncJoiningOverride = overridden, ZoneSyncJoiningEffective = effective,
+        };
         if (!Connected)
         {
             state.Lookup = CharacterLookup.NotConnected;
@@ -135,6 +144,7 @@ public sealed class FakePlayerSync : IPlayerSyncExportApi, IDisposable
         }
 
         state.PlayerName = pair.Name;
+        state.HomeWorld = pair.HomeWorld;
         state.IsZoneSyncOnly = pair.ZoneSyncOnly;
         state.SharesZoneSyncGroup = pair.ZoneSyncOnly;
         if (pair.Paused)
@@ -165,11 +175,22 @@ public sealed class FakePlayerSync : IPlayerSyncExportApi, IDisposable
     public CharacterStateDto GetCharacterState(uint entityId)
         => ExportJson.Deserialize<CharacterStateDto>(ExportJson.Serialize(Resolve(entityId).State))!;
 
-    public bool RequestResync(uint entityId)
+    public bool SupportsRescan => false;
+
+    public bool RequestRescan(uint entityId)
     {
-        ResyncRequests++;
+        RescanRequests++;
+        return false;
+    }
+
+    public bool SupportsReapply => true;
+
+    /// <summary>Counted as a possible download: reapplying runs PlayerSync's download pipeline.</summary>
+    public bool RequestReapply(uint entityId)
+    {
+        ReapplyRequests++;
         if (!Pairs.TryGetValue(entityId, out var pair)) return false;
-        OnResync?.Invoke(pair);
+        OnReapply?.Invoke(pair);
         return true;
     }
 

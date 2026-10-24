@@ -19,16 +19,23 @@ automatically. This is an unofficial, personal-use build; it is not endorsed by 
 
 It does not change syncing, downloads, the cache, its index, or the configuration.
 
-## IPC (version 1)
+## IPC (version 2)
 
 | Gate | Signature | Purpose |
 | --- | --- | --- |
-| `PlayerSync.Export.GetApiVersion` | `Func<int>` | Returns 1. |
-| `PlayerSync.Export.GetCharacterState` | `Func<uint, string>` | EntityId to `CharacterStateDto` JSON. |
-| `PlayerSync.Export.RequestResync` | `Func<uint, bool>` | Runs PlayerSync's "reapply last received data". |
+| `PlayerSync.Export.GetApiVersion` | `Func<int>` | Returns 2. |
+| `PlayerSync.Export.GetCharacterState` | `Func<uint, string>` | EntityId to `CharacterStateDto` JSON. Read-only: never downloads, reapplies or writes. |
+| `PlayerSync.Export.RequestReapply` | `Func<uint, bool>` | Runs PlayerSync's "reapply last received data". **May download** missing files; the exporter calls it only from its confirmed "Reapply PlayerSync Data" action. |
 | `PlayerSync.Export.StartExport` | `Func<string, string>` | `ExportRequestDto` JSON to `ExportStartResultDto` JSON. |
 | `PlayerSync.Export.GetExportStatus` | `Func<string, string>` | Job id to `ExportJobStatusDto` JSON. |
 | `PlayerSync.Export.CancelExport` | `Func<string, bool>` | Cancels a job. |
+
+Version 2 (exporter 0.6.0.0) replaced `RequestResync` with `RequestReapply`, so a caller cannot mistake it for a
+read-only rescan. `CharacterStateDto` reports `HomeWorld` and the ZoneSync joining setting as
+`ZoneSyncJoiningGlobal`, `ZoneSyncJoiningOverride` (your own character's entry in `ZoneSyncEnabledPerCharacter`) and
+`ZoneSyncJoiningEffective` instead of `ZoneSyncEnabled`; `ExportRequestDto` carries `ExpectedHomeWorld`, and a job
+fails when the character's world differs. An exporter and a build of different versions do not talk to each other:
+the exporter shows the loaded version as incompatible and reads through Penumbra instead.
 
 `ResourceDto` gained two optional fields in 0.4.0.0 without a version change (older readers ignore them):
 `ExcludedGamePaths` (paths PlayerSync's validation removed) and `MissingGamePaths` (paths of an applied resource that
@@ -36,7 +43,10 @@ are not in PlayerSync's mapping). For an available resource, `GamePaths` now lis
 Penumbra. Every game path is looked up, not only the first one.
 
 Only files in the requested character's resolved mapping can be exported, only into an existing folder outside
-PlayerSync's cache, Penumbra's mod folder and the Dalamud plugin folders, and every copy is SHA-1 verified.
+PlayerSync's cache, Penumbra's mod folder, the game installation, Dalamud, `pluginConfigs` and the installed plugins'
+folders, also when the path reaches one of them through a symbolic link or junction. The provider runs these checks
+itself (the same `ExportPathPolicy` code), before the job and again before each file, so calling the IPC directly does
+not bypass them. Every copy is SHA-1 verified, and a job removes only its own temporary files.
 
 ## Build
 
@@ -59,8 +69,8 @@ keeps your PlayerSync settings and cache. See `docs/INSTALL.md`.
 
 1. Set `commit` and `version` in `UPSTREAM` to the new upstream revision.
 2. Run `apply.sh`; if the patch does not apply, resolve it in the checkout and regenerate with
-   `git diff -- PlayerSync ':!PlayerSync/Interop/Ipc/Export/Contracts' > playersync-fork/patches/0001-export-ipc.patch`
-   (add new files with `git add -N` first).
+   `git add -A -- . ':!PlayerSync/Interop/Ipc/Export/Contracts'` and then
+   `git diff --cached -- . ':!PlayerSync/Interop/Ipc/Export/Contracts' > playersync-fork/patches/0001-export-ipc.patch`.
 3. CI builds the patched PlayerSync on every push.
 
 If the patched build is not loaded (for example after an official PlayerSync update), the exporter falls back to

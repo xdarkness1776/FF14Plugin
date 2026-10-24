@@ -128,10 +128,18 @@ public static class ExportPathPolicy
     }
 
     /// <summary>
-    /// Validates a destination directory for an export.
+    /// Validates a destination directory for an export. Both the exporter's own folder service and the export job
+    /// (and so the PlayerSync export IPC) call this, so a direct IPC caller gets the same checks as the UI.
     /// Returns null when valid, otherwise an actionable error message.
+    /// <para>
+    /// Checks, in order: a full path; the drive exists; the deepest existing part of the path is a folder; and that
+    /// neither the path as written nor the path with every existing symbolic link or junction resolved lies inside a
+    /// forbidden folder (whose own links are resolved too). Folders that do not exist yet are allowed below a valid
+    /// existing parent; they are created later. Windows cloud-file placeholders are reparse points without a link
+    /// target and are not treated as links.
+    /// </para>
     /// </summary>
-    public static string? ValidateDestination(string? destination, IEnumerable<string?> forbiddenRoots)
+    public static string? ValidateDestination(string? destination, IEnumerable<string?> forbiddenRoots, Func<string, bool>? driveExists = null)
     {
         if (string.IsNullOrWhiteSpace(destination)) return "No export folder is set.";
         if (!Path.IsPathFullyQualified(destination)) return $"'{destination}' is not a full path. Choose a folder such as D:\\My FFXIV Mods.";
@@ -146,6 +154,22 @@ public static class ExportPathPolicy
             return $"'{destination}' is not a valid path: {ex.Message}";
         }
 
+        var drive = Path.GetPathRoot(full);
+        if (string.IsNullOrEmpty(drive) || !(driveExists ?? Directory.Exists)(drive))
+            return $"The drive '{drive}' is not available. Connect it or choose another folder.";
+
+        string real;
+        try
+        {
+            real = ResolveExistingLinks(full);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"'{full}' cannot be checked: {ex.Message}";
+        }
+
+        if (File.Exists(real)) return $"'{full}' is a file, not a folder.";
+
         foreach (var forbidden in forbiddenRoots)
         {
             if (string.IsNullOrWhiteSpace(forbidden)) continue;
@@ -159,10 +183,100 @@ public static class ExportPathPolicy
                 continue;
             }
 
-            if (IsWithin(forbiddenFull, full))
+            var forbiddenReal = forbiddenFull;
+            try
+            {
+                forbiddenReal = ResolveExistingLinks(forbiddenFull);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The forbidden folder is still compared as written.
+            }
+
+            if (IsWithin(forbiddenFull, full) || IsWithin(forbiddenReal, full))
                 return $"The export folder may not be inside '{forbiddenFull}' (PlayerSync cache, Penumbra mods, game or plugin folders are off limits).";
+            if (IsWithin(forbiddenFull, real) || IsWithin(forbiddenReal, real))
+                return $"The export folder '{full}' goes through a link or junction to '{real}', which is inside '{forbiddenFull}' " +
+                       "(PlayerSync cache, Penumbra mods, game or plugin folders are off limits).";
         }
 
         return null;
+    }
+
+    private const int MaxLinkDepth = 32;
+
+    /// <summary>
+    /// The path with every existing component that is a symbolic link or junction replaced by its final target.
+    /// Components that do not exist yet are appended as written. Does not create or change anything.
+    /// </summary>
+    public static string ResolveExistingLinks(string path) => ResolveExistingLinks(NormalizeFull(path), 0);
+
+    private static string ResolveExistingLinks(string full, int depth)
+    {
+        if (depth > MaxLinkDepth) throw new IOException("Too many nested links.");
+        var root = Path.GetPathRoot(full) ?? string.Empty;
+        var segments = full[root.Length..].Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        var current = root;
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var next = Path.Combine(current, segments[i]);
+            FileSystemInfo info = Directory.Exists(next) ? new DirectoryInfo(next) : new FileInfo(next);
+            if (!info.Exists)
+            {
+                // Nothing below can be a link yet: the rest is created later as ordinary folders.
+                return NormalizeFull(Path.Combine([current, .. segments[i..]]));
+            }
+
+            if (info.LinkTarget != null)
+            {
+                var target = info.ResolveLinkTarget(returnFinalTarget: true)
+                             ?? throw new IOException($"'{next}' is a link whose target cannot be resolved.");
+                // The target's own parents may be links too.
+                next = ResolveExistingLinks(NormalizeFull(target.FullName), depth + 1);
+            }
+
+            if (i < segments.Length - 1 && File.Exists(next)) throw new IOException($"'{next}' is a file, not a folder.");
+            current = next;
+        }
+
+        return NormalizeFull(current);
+    }
+
+    /// <summary>
+    /// Folders every export provider must refuse besides the PlayerSync cache and the Penumbra mod folder: the game
+    /// installation, Dalamud's plugin configurations (PlayerSync's settings and FileCache.csv among them), the calling
+    /// plugin's installation and the installedPlugins folder above it, and Dalamud itself.
+    /// </summary>
+    /// <param name="pluginConfigsDirectory">Dalamud's pluginConfigs folder.</param>
+    /// <param name="pluginAssemblyDirectory">The folder of the calling plugin's assembly.</param>
+    /// <param name="dalamudDirectory">The folder of Dalamud's own assembly, when known.</param>
+    public static IEnumerable<string?> CommonForbiddenRoots(string? pluginConfigsDirectory, string? pluginAssemblyDirectory, string? dalamudDirectory)
+    {
+        yield return GameInstallFolder();
+        yield return pluginConfigsDirectory;
+        yield return dalamudDirectory;
+        if (string.IsNullOrEmpty(pluginAssemblyDirectory)) yield break;
+        // installedPlugins/<plugin>/<version>/plugin.dll; a dev plugin lives elsewhere and only its own folder is refused.
+        var version = new DirectoryInfo(pluginAssemblyDirectory);
+        yield return version.FullName;
+        var plugin = version.Parent;
+        if (plugin == null) yield break;
+        yield return plugin.FullName;
+        if (plugin.Parent is { Name: "installedPlugins" } installed) yield return installed.FullName;
+    }
+
+    /// <summary>The game installation folder (ffxiv_dx11.exe lives in &lt;install&gt;/game), or null when unknown.</summary>
+    public static string? GameInstallFolder()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe) || !Path.GetFileName(exe).StartsWith("ffxiv", StringComparison.OrdinalIgnoreCase)) return null;
+            return Path.GetDirectoryName(Path.GetDirectoryName(exe));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 }
