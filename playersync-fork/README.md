@@ -48,6 +48,19 @@ folders, also when the path reaches one of them through a symbolic link or junct
 itself (the same `ExportPathPolicy` code), before the job and again before each file, so calling the IPC directly does
 not bypass them. Every copy is SHA-1 verified, and a job removes only its own temporary files.
 
+## Proposed upstream fix (not applied)
+
+`proposed/0001-mcdf-import-export-hardening.patch` fixes defects in PlayerSync's own MCDF import and export, found in
+the 0.6.1 audit:
+- On import, it checks the header length, file count, lengths and hashes before anything is applied, and reads every
+  file exactly. It also rejects truncated files, data after the last file, invalid game paths and swap targets, and
+  conflicting paths.
+- On export, it reads each file exactly and logs files left out because they have no local copy.
+
+The MCDF format is unchanged. It applies cleanly to the pinned commit, independently of the export patch, and the
+patched PlayerSync builds with both applied. It has not been run in game. `apply.sh` does not apply it, because it
+changes how PlayerSync imports files, which is not what this fork is for. It is meant to be offered to upstream.
+
 ## Build
 
 ```bash

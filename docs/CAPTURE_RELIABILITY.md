@@ -30,7 +30,7 @@ There is no IPC for a character's file list, its pairing state or its ZoneSync m
 |---|---|---|
 | `GetGameObjectResourcePaths(ushort index)` | framework (called from `RunOnFrameworkThread`) | Penumbra's resource tree for the object: the files on the character right now (models, materials, textures, skeleton and physics files). It does not list animations, sounds or VFX that are not part of the tree. Returns null when the object is not a character. |
 | `GameObjectResourcePathResolved(nint gameObject, string gamePath, string fullPath)` | any thread the game loads resources on | Raised in `GameStateApi.OnResourceLoaded` and `OnPapRequested` for every resource load that Penumbra associates with a game object (`ResolveData.AssociatedGameObject != 0`). `fullPath` is the redirected path, or the game path when nothing redirects it. It carries an address, not an identity. |
-| `RedrawObject(index, Redraw)` | framework | Makes the game load the character's files again. The exporter uses it for **Scan Character Resources**. |
+| `RedrawObject(index, Redraw)` | framework | Makes the game load the character's files again. The exporter uses it for **Scan (Redraw)**. |
 | `GetModDirectory()` | any | The user's Penumbra mod folder, used to recognise their own mod files. |
 | `ApiVersion()` | any | Breaking version 5 is required. Any other version is refused with a message. |
 
@@ -135,13 +135,20 @@ from an MCDF (see below).
 
 Limits and validation:
 
-- Header: at most 32 MB, and it must be a JSON object. Invalid JSON is rejected with a readable reason.
+- Header: at most 32 MB, and it must be a JSON object. Invalid JSON is rejected with a readable reason. Since 0.6.1
+  the header is read in 64 KB chunks, so a header length the file does not back up is found after one chunk instead
+  of after allocating the full claimed size.
 - Entries: at most 100,000. Each must be between 0 and 1 GB, and the total at most 16 GB. A negative or oversized
   length rejects the file, because every later entry's position depends on it.
 - LZ4 errors, a missing magic, version ≠ 1 and a file that ends inside the header all become a readable error. The
   original file is never written.
 - Contents are streamed and hashed, never stored in memory or extracted.
-- After the last entry, up to 64 KB of extra data is looked for and reported as "trailing data".
+- After the last entry, up to 64 KB of extra data is looked for and reported as "trailing data". **Policy:** trailing
+  data is a warning, not a rejection. It cannot shift any entry, because every entry was already read at its declared
+  position and verified by its own hash; it only means the file was modified. (PlayerSync's own importer, with the
+  proposed patch below, rejects it, because it applies the file.)
+- Every read loops until the declared count is read or the stream ends; one short `Read` never truncates an entry
+  (tested with a stream that returns at most 3 bytes per call).
 
 Status of each entry:
 
@@ -152,8 +159,20 @@ Status of each entry:
 | MissingPayload | The file ends before this entry | no |
 | InvalidHash | The claimed hash is not 40 hex digits | no |
 | InvalidPath | No valid game path | no |
-| ConflictingGamePath | Another entry claims one of its game paths with other content | no |
+| ConflictingGamePath | Another entry claims one of its game paths with other content (compared case-insensitively, as Penumbra does) | no |
+| EmptyPayload | The entry stores zero bytes; no game file is empty, and PlayerSync's importer stops at it (0.6.1) | no |
 | NotRead | Only the header was read | no |
+
+**File swaps (0.6.1).** Each swap now has a status as well. PlayerSync's importer writes stored files and then swaps
+into one dictionary keyed by the exact game path (`CharaDataManager.McdfApplyToTarget`, lines 485-490), so a swap for a
+path that also has a stored file replaces it, and of two swaps for one path the last one wins.
+
+| Swap status | Meaning | Used for matching |
+|---|---|---|
+| Valid | Both sides valid game paths, not pointing at itself, same file type | yes |
+| Invalid | Invalid path or target, a swap to itself, different file types, or no game path | no |
+| OverridesStoredFile | A stored file claims the same path; which one the character would show depends on the importer | no |
+| ConflictingTargets | Another swap sends the same path elsewhere | no |
 
 Entries of a kind the writer excludes are counted separately (`WriterExcludedCount`): an MCDF that has them was not
 written by PlayerSync as it stands.

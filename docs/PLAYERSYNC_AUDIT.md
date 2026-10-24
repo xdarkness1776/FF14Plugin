@@ -105,6 +105,42 @@ PlayerSync applied from Penumbra instead:
 
 The export IPC patch stays available as an optional source with the complete mapping and the real sync state.
 
+## Update (0.6.1): MCDF, cache and transient audit
+
+Re-checked against `b2f8ce8` (still the latest upstream revision on 2026-10-24). The full report, with every finding,
+its confidence and the test results, is in the 0.6.1 audit report. Where each part lives:
+
+| Part | Owner | Source |
+|---|---|---|
+| MCDF writer | PlayerSync | `Services/CharaData/CharaDataFileHandler.cs` `SaveCharaFileAsync` 259-306, `CreatePlayerData` 80-118; `Models/MareCharaFileData.cs` 19-55 |
+| MCDF import (applies to Penumbra) | PlayerSync | `CharaDataFileHandler.LoadCharaFileHeader` 144-191, `McdfExtractFiles` 193-227; `CharaDataManager.McdfApplyToTarget` 465-514, `ApplyDataAsync` 834-900 |
+| MCDF header | PlayerSync | `Models/MareCharaFileHeader.cs` 11-53 |
+| MCDF reader for matching (never applies) | Exporter | `src/CharacterModExporter.Core/Library/McdfReader.cs` |
+| Cache scan, eviction | PlayerSync | `FileCache/CacheMonitor.cs` 415-447 (eviction), 544-550 (scan filter); `MareConfig.MaxLocalCacheInGiB` = 40 |
+| Download and cache write | PlayerSync | `WebAPI/Files/FileDownloadManager.cs` 432-500, `PersistFileToStorage` 537-565 |
+| Compressed alternates | PlayerSync | `FileCache/CompressedAlternateManager.cs` (in memory only) |
+| Transient resources | PlayerSync | `FileCache/TransientResourceManager.cs`; `PlayerData/Factories/PlayerDataFactory.cs` 150-214 |
+
+Confirmed in PlayerSync's own MCDF code (not the exporter's): a truncated entry is accepted, so every later entry is
+shifted (`McdfExtractFiles` only rejects an entry that returned zero bytes, line 216); stored hashes are only logged,
+never checked; the header length is passed to `BinaryReader.ReadBytes` unchecked; game paths and swap targets are not
+validated, and import does not run `PlayerSync.Validation` (that runs only for pairs, `PairHandler` line 505); the
+writer copies each file with one `BinaryReader.Read` call whose result is ignored (line 291) and silently skips files
+with no local copy (`MareCharaFileData` lines 47-52). Extraction finishes before any Penumbra change, and the
+extracted `mare_N.tmp` files are deleted in a `finally`. A fix is in
+`playersync-fork/proposed/0001-mcdf-import-export-hardening.patch`; it is **not** applied by `apply.sh`.
+
+Cache facts that matter to the exporter: the startup scan indexes every cache file whose name, or the part before
+its first dot, is 40 characters long, by the SHA-1 of its content; a crash-leftover `<hash>.bin` (still LZ4-wrapped)
+can therefore be indexed under another hash. Final files are written in place (no temporary name) and then hashed;
+a mismatch deletes them. Eviction runs while the cache exceeds `MaxLocalCacheInGiB` (default 40) and deletes oldest
+`LastAccessTime` first until 5 % below the limit; `LastAccessTime` is set to the download day and never updated on
+use. Compressed-alternate mappings are kept in memory only.
+
+The exporter therefore never offers `.bin`, `.tmp`, `.part` or partial copies, verifies every copied file against
+its hash, builds packages only from the verified staged copies (re-checked by SHA-256 while packaging since 0.6.1),
+and reports a file evicted during an export as missing.
+
 ## Update (0.6): reliability and integration fixes
 
 Re-checked against `b2f8ce8` (still the latest upstream revision when this was written). Findings, each confirmed in

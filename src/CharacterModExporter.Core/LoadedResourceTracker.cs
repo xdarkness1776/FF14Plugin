@@ -279,6 +279,7 @@ public static class PenumbraResolution
         var other = 0;
         var unchanged = 0;
         var inactive = 0;
+        var temporary = 0;
         foreach (var (path, tracked) in files.OrderBy(kv => kv.Value.GamePaths.FirstOrDefault(), StringComparer.Ordinal))
         {
             var gamePaths = tracked.GamePaths;
@@ -313,7 +314,13 @@ public static class PenumbraResolution
 
             dto.Hash = hash;
             dto.CacheHash = hash;
-            if (fi.Exists && ext != null && hash != null)
+            if (ExportPathPolicy.IsTemporaryFile(fi.Name))
+            {
+                // A download or extraction leftover is never a finished resource, whatever its name claims.
+                temporary++;
+                dto.Availability = ResourceAvailability.Missing;
+            }
+            else if (fi.Exists && ext != null && hash != null)
             {
                 dto.Size = fi.Length;
                 dto.Extension = ext;
@@ -335,6 +342,8 @@ public static class PenumbraResolution
         if (truncated)
             state.Notes.Add($"More than {LoadedResourceTracker.MaxEntries} redirections were seen for this character; later ones were ignored, so the list may be incomplete.");
 
+        if (temporary > 0)
+            state.Notes.Add($"{temporary} redirection(s) point at a temporary download or extraction file (.bin, .tmp); they are listed as missing and never exported.");
         if (unchanged > 0)
             state.Notes.Add($"{unchanged} synced file(s) are identical to the game's own files (mods often ship unchanged copies) and are not offered.");
         if (other > 0)
