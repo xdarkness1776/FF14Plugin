@@ -103,17 +103,22 @@ public sealed class PackageLibrary
 
     public void SaveOverrides() => Overrides.Save(_overridesPath);
 
-    /// <summary>Matches a live character. Resources the stock source read from PlayerSync's cache may be compressed copies.</summary>
+    /// <summary>
+    /// Matches a live character. Resources the stock source read from PlayerSync's cache may be compressed copies, and
+    /// files the character no longer uses are left out: the live report is about what is applied now.
+    /// </summary>
     public MatchReport? MatchLive(CharacterStateDto state, string characterKey)
     {
         if (Index == null) return null;
-        var resources = state.Resources.Select(r => CharacterResource.From(r, SourceHashKnown(state, r))).ToList();
-        return PackageMatcher.Match(resources, Index.Packages, Overrides.ConfirmedPaths(characterKey, Index.Packages));
+        var resources = state.Resources.Where(r => r.Activity != ResourceActivity.NoLongerActive)
+            .Select(r => CharacterResource.From(r, SourceHashKnown(state, r))).ToList();
+        return PackageMatcher.Match(resources, Index.Packages, Overrides.ConfirmedPaths(characterKey, Index.Packages),
+            state.LinkDetailsKnown ? MatchContext.ExportIpc : MatchContext.LivePenumbra);
     }
 
     /// <summary>Matches a saved MCDF snapshot. Its results are a separate report and never mixed with the live one.</summary>
     public MatchReport? MatchSnapshot(McdfSnapshot snapshot)
-        => Index == null ? null : PackageMatcher.Match(McdfReader.ToResources(snapshot), Index.Packages);
+        => Index == null ? null : PackageMatcher.Match(McdfReader.ToResources(snapshot), Index.Packages, context: MatchContext.Mcdf);
 
     /// <summary>
     /// The export IPC reports the original hash next to the hash of the compressed copy it used, so its hashes are
@@ -135,7 +140,9 @@ public sealed class OriginalPackagesManifest
 {
     public const string FileName = "OriginalPackages.json";
 
-    public int ManifestVersion { get; set; } = 1;
+    /// <summary>1: first format. 2: adds EvidenceCoverage, EvidenceDescription and per-package evidence counts.</summary>
+    public int ManifestVersion { get; set; } = 2;
+
     public string ExporterVersion { get; set; } = string.Empty;
     public DateTimeOffset ExportedAtUtc { get; set; }
     public string CharacterName { get; set; } = string.Empty;
@@ -145,6 +152,11 @@ public sealed class OriginalPackagesManifest
     public string Evidence { get; set; } = "Live";
 
     public string? SnapshotFile { get; set; }
+
+    /// <summary>Complete, Partial or Unknown: whether the evidence could contain every resource of the character.</summary>
+    public string EvidenceCoverage { get; set; } = nameof(MatchCoverage.Unknown);
+
+    public string? EvidenceDescription { get; set; }
     public string LibraryFolder { get; set; } = string.Empty;
     public DateTimeOffset LibraryIndexedAtUtc { get; set; }
     public string HashNote { get; set; } =

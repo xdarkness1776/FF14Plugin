@@ -8,7 +8,9 @@ namespace CharacterModExporter.Core;
 
 public sealed class ExportManifest
 {
-    public int ManifestVersion { get; set; } = 1;
+    /// <summary>1: first format. 2: adds <see cref="ManifestAsset.Activity"/>, FirstSeenUtc and LastSeenUtc.</summary>
+    public int ManifestVersion { get; set; } = 2;
+
     public string ExporterVersion { get; set; } = string.Empty;
     public int ExportIpcVersion { get; set; } = ExportIpc.ApiVersion;
     public DateTimeOffset ExportedAtUtc { get; set; }
@@ -54,6 +56,18 @@ public sealed class ManifestAsset
     public bool Sha1Verified { get; set; }
     public string? Sha256 { get; set; }
     public bool InInstallablePackage { get; set; }
+
+    /// <summary>
+    /// Active, ObservedLoaded or NoLongerActive (see <see cref="ResourceActivity"/>); absent when the source does not
+    /// track it. Files no longer in use are never put into packages or item mods.
+    /// </summary>
+    public string? Activity { get; set; }
+
+    public DateTimeOffset? FirstSeenUtc { get; set; }
+    public DateTimeOffset? LastSeenUtc { get; set; }
+
+    [JsonIgnore]
+    public bool IsCurrent => Activity != nameof(ResourceActivity.NoLongerActive);
 }
 
 public sealed record ManifestFileSwap(string ObjectKind, List<string> GamePaths, string? Target);

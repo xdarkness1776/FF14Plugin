@@ -28,12 +28,16 @@ public sealed class ExportWindow : Window, IDisposable
     private readonly FileDialogManager _dialog = new();
     private (string Path, DateTime Written, string Text)? _report;
 
-    public ExportWindow(ExportSession session, Action openSettings, Action<string> openFolder)
+    private readonly Action? _closed;
+
+    /// <param name="closed">Called when the window is closed, so the character stops being watched.</param>
+    public ExportWindow(ExportSession session, Action openSettings, Action<string> openFolder, Action? closed = null)
         : base($"Export Character Mods: {session.Target.Name}##cmx-{session.Target.EntityId}")
     {
         _session = session;
         _openSettings = openSettings;
         _openFolder = openFolder;
+        _closed = closed;
         SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(720, 460), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
         Size = new Vector2(980, 640);
         SizeCondition = ImGuiCond.FirstUseEver;
@@ -43,6 +47,8 @@ public sealed class ExportWindow : Window, IDisposable
     public ExportSession Session => _session;
 
     public override void OnOpen() => _ = _session.RefreshAsync();
+
+    public override void OnClose() => _closed?.Invoke();
 
     public void Dispose() => _session.Dispose();
 
@@ -276,6 +282,8 @@ public sealed class ExportWindow : Window, IDisposable
             ImGui.TableNextColumn();
             var notes = new List<string>();
             if (row.IsCompressedAlternate) notes.Add("compressed alternate");
+            if (row.Activity == ResourceActivity.NoLongerActive) notes.Add("no longer in use");
+            else if (row.Activity == ResourceActivity.ObservedLoaded) notes.Add("seen loading");
             if (row.ObjectKinds.Count > 0 && !(row.ObjectKinds.Count == 1 && row.ObjectKinds.Contains("Player"))) notes.Add(string.Join("/", row.ObjectKinds));
             notes.Add("individual resource");
             ImGui.TextUnformatted(string.Join(", ", notes));
@@ -380,6 +388,8 @@ public sealed class ExportWindow : Window, IDisposable
             ImGui.TextColored(ImGuiColors.DalamudViolet,
                 $"Saved snapshot (not live): {Path.GetFileName(snap.FilePath)}, saved {snap.FileLastWriteUtc.ToLocalTime():g}, {snap.Files.Count} file(s), " +
                 (snap.AllVerified ? "every file matches its hash." : "some files could not be verified and are not used as evidence."));
+            if (!snap.AllVerified)
+                Tooltip(string.Join("\n", snap.StatusCounts.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}: {kv.Value}").Concat(snap.Warnings.Take(10))));
             if (!string.IsNullOrWhiteSpace(snap.Description)) ImGui.TextColored(ImGuiColors.DalamudGrey, "Description: " + snap.Description);
         }
 
@@ -388,6 +398,12 @@ public sealed class ExportWindow : Window, IDisposable
         {
             ImGui.TextUnformatted(_viewSnapshot ? "Open an MCDF snapshot to compare it." : "Press Match Live Character to compare this character with your library.");
             return;
+        }
+
+        if (report.SourceDescription.Length > 0)
+        {
+            ImGui.TextColored(ImGuiColors.DalamudGrey, $"Evidence: {report.Source}, coverage {report.Coverage.ToString().ToLowerInvariant()}.");
+            Tooltip(report.SourceDescription);
         }
 
         var counts = report.Resources.GroupBy(r => r.Status).ToDictionary(g => g.Key, g => g.Count());
@@ -587,7 +603,9 @@ public sealed class ExportWindow : Window, IDisposable
             _ => string.Empty,
         };
         if (m.Status == MatchStatus.UserConfirmed) text = $"You confirmed this package. Computed: {Describe(m.ComputedStatus)}. " + text;
-        return string.Join("\n", new[] { text }.Concat(m.Reasons));
+        var evidence = $"Matched: {m.MatchedPaths.Count} file(s), {m.MatchedSwaps.Count} swap(s); {m.UniqueMatchedCount} only in this package. " +
+                       $"Not seen: {m.UnseenCount}. Not comparable from this evidence: {m.NotCapturableCount}.";
+        return string.Join("\n", new[] { text, evidence }.Concat(m.Reasons));
     }
 
     private bool Matches(IReadOnlyList<string> gamePaths, string? hash)

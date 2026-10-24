@@ -35,12 +35,14 @@ not endorsed by the PlayerSync team, and not required.
 | In-game behaviour | version 0.1 loaded in game and opened the export window from the context menu; the Penumbra source (0.2) is **not tested in game yet**; see [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md) |
 | `.pmp` import into Penumbra (full and per item) | structure validated, real import not tested yet |
 | Original package library, matching, original export, MCDF reader | unit tested (synthetic packages for every group type, a real 156 MB package); **not tested in game yet** |
+| File activity tracking, zone-change reset, MCDF validation (0.5) | unit tested; **not tested in game yet** |
 
 ## Docs
 
 * [docs/INSTALL.md](docs/INSTALL.md): install, usage and output layout
 * [docs/ORIGINAL_PACKAGES.md](docs/ORIGINAL_PACKAGES.md): package library, matching statuses, exporting originals, categories, MCDF, Penumbra and Snappy notes
 * [docs/PLAYERSYNC_AUDIT.md](docs/PLAYERSYNC_AUDIT.md): how PlayerSync's ZoneSync pipeline works and why the IPC is needed
+* [docs/CAPTURE_RELIABILITY.md](docs/CAPTURE_RELIABILITY.md): IPC and Penumbra semantics, file activity tracking, ZoneSync matrix, MCDF validation, supplemental plugin data
 * [playersync-fork/README.md](playersync-fork/README.md): the optional patch, the IPC contract, rebuilding for new PlayerSync versions
 * [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md): in-game acceptance tests
 

@@ -46,6 +46,24 @@ public enum ResourceAvailability
     FileSwap,
 }
 
+/// <summary>
+/// Whether a resource is still in use by the character, as far as the source can tell. Only the stock-PlayerSync
+/// source (which watches Penumbra) sets it; the export IPC reports PlayerSync's applied mapping, which is current by
+/// definition, and leaves it null.
+/// </summary>
+public enum ResourceActivity
+{
+    /// <summary>In Penumbra's latest resource tree for the character: on the character right now.</summary>
+    Active,
+    /// <summary>
+    /// Seen loading for the character (an animation, VFX or sound as it played) but never in its resource tree, which
+    /// does not list such files. Probably still part of the character, but this cannot be confirmed.
+    /// </summary>
+    ObservedLoaded,
+    /// <summary>Was on the character earlier in this capture, but is gone from the latest resource tree or was replaced.</summary>
+    NoLongerActive,
+}
+
 /// <summary>Where the resolved local file lives.</summary>
 public enum SourceKind
 {
@@ -132,6 +150,14 @@ public sealed class ResourceDto
     public long? Size { get; set; }
     public ResourceAvailability Availability { get; set; }
     public SourceKind SourceKind { get; set; }
+
+    /// <summary>Null when the source does not track it (see <see cref="ResourceActivity"/>).</summary>
+    public ResourceActivity? Activity { get; set; }
+
+    /// <summary>When the source first and last saw the resource in this capture; null when it does not track it.</summary>
+    public DateTimeOffset? FirstSeenUtc { get; set; }
+
+    public DateTimeOffset? LastSeenUtc { get; set; }
 }
 
 public sealed class ExportRequestDto

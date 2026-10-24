@@ -56,6 +56,13 @@ ignored, so a red and a blue variant of the same mod are told apart.
 
 There are no percentages. A matching file is evidence for a package, never proof that the whole package is in use.
 
+Since 0.5, every comparison says what it is based on. The evidence line above the table shows the source (export
+IPC, live through Penumbra, or MCDF snapshot) and whether its coverage is complete or partial. A package's tooltip
+gives its matched files and swaps, how many of them only this package provides, how many were not seen, and how many
+this evidence can never contain. An MCDF has no animations, sounds or most VFX, so a package that has them is at most
+**Strong** from an MCDF. Files that the live character no longer uses (see `CAPTURE_RELIABILITY.md`) are left out
+of the live match.
+
 ### Compressed textures
 
 PlayerSync can replace a texture with a compressed alternate (`CompressedAlternateUsage`; the source hash maps to
@@ -109,8 +116,10 @@ Format, verified against PlayerSync 1.15.5.9 (`MareCharaFileHeader`, `MareCharaF
 the whole file is a K4os LZ4 legacy stream; inside are `MCDF`, a version byte (only 1 exists), an int32 length, that
 many bytes of UTF-8 JSON (`Description`, `GlamourerData`, `CustomizePlusData`, `ManipulationData`,
 `Files[{GamePaths, Length, Hash}]`, `FileSwaps[{GamePaths, FileSwapPath}]`) and then the files' bytes in that order.
-The reader checks the magic, version and lengths, hashes every stored file, and only files whose bytes match their
-SHA-1 count as evidence.
+The reader checks the magic, version and lengths (with limits), hashes every stored file, and gives each entry a status
+(Verified, HashMismatch, MissingPayload, InvalidHash, InvalidPath, ConflictingGamePath, NotRead). Only Verified
+entries count as evidence. Damaged, truncated or padded files are reported, not guessed at. Details are in
+`CAPTURE_RELIABILITY.md`.
 
 PlayerSync writes MCDF files only from **your own** character, and they contain loose files, not packages.
 

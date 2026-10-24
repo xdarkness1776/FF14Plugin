@@ -33,6 +33,16 @@ public sealed class OriginalPackageCopy
     public bool CategoryFromUser { get; set; }
     public List<string> ActiveOptions { get; set; } = [];
     public int MatchedFiles { get; set; }
+
+    /// <summary>Matched files no other package in the library provides with the same content.</summary>
+    public int UniqueMatchedFiles { get; set; }
+
+    public int MatchedSwaps { get; set; }
+    public int UnseenFiles { get; set; }
+
+    /// <summary>Files of the used options the evidence can never contain (for an MCDF: animations, sounds, most VFX).</summary>
+    public int NotComparableFiles { get; set; }
+
     public List<string> Reasons { get; set; } = [];
 }
 
@@ -72,6 +82,10 @@ public static class OriginalPackageExporter
                 CategoryFromUser = fromUser,
                 ActiveOptions = [.. match.ActiveOptions],
                 MatchedFiles = match.MatchedPaths.Count,
+                UniqueMatchedFiles = match.UniqueMatchedCount,
+                MatchedSwaps = match.MatchedSwaps.Count,
+                UnseenFiles = match.UnseenCount,
+                NotComparableFiles = match.NotCapturableCount,
                 Reasons = [.. match.Reasons],
             };
             results.Add(result);

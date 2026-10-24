@@ -104,6 +104,13 @@ PlayerSync applied from Penumbra instead:
 
 The export IPC patch stays available as an optional source with the complete mapping and the real sync state.
 
+## Update (0.5): capture reliability
+
+See [CAPTURE_RELIABILITY.md](CAPTURE_RELIABILITY.md). It covers the PlayerSync IPC that exists (`LoadMcdf`,
+`LoadMcdfAsync`, `GetHandledAddresses`), Penumbra's event semantics, identity and zone-change handling, how each
+file's activity is tracked, the ZoneSync matrix, MCDF validation and the supplemental plugin data. Upstream is still
+`b2f8ce8`.
+
 ## Update (0.4): re-audit for original-package matching
 
 Upstream `origin/main` was fetched again on 2026-10-24 and is still `b2f8ce894edbaafda6fbda3c84b5561b878e513c`, so the

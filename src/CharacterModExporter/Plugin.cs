@@ -21,6 +21,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IContextMenu ContextMenu { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IChatGui Chat { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IDataManager Data { get; private set; } = null!;
@@ -48,7 +49,7 @@ public sealed class Plugin : IDalamudPlugin
         _penumbraModDirectory = PluginInterface.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         _folders = new ExportFolderService(ForbiddenRoots);
         var vanilla = new VanillaFileComparer(gamePath => Data.FileExists(gamePath) ? Data.GetFile(gamePath)?.Data : null);
-        _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, Log, _ipc, ForbiddenRoots, vanilla);
+        _penumbra = new PenumbraExportSource(PluginInterface, ObjectTable, Framework, ClientState, Log, _ipc, ForbiddenRoots, vanilla);
         _source = new ExportSourceRouter(_ipc, _penumbra);
         var itemNames = new ItemNameService(Data, Log);
         _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString(), itemNames: itemNames.Resolve);
@@ -117,11 +118,12 @@ public sealed class Plugin : IDalamudPlugin
             _windows.RemoveWindow(existing);
             existing.Dispose();
             _exportWindows.Remove(target.EntityId);
+            _penumbra.Forget(target.EntityId);
         }
 
         var session = new ExportSession(target, _source, _folders, _coordinator, () => _config.Export, _selection.IsStillPresentAsync,
             library: _library, exporterVersion: PluginInterface.Manifest.AssemblyVersion.ToString());
-        var window = new ExportWindow(session, () => _settingsWindow.IsOpen = true, OpenFolder);
+        var window = new ExportWindow(session, () => _settingsWindow.IsOpen = true, OpenFolder, () => _penumbra.Forget(target.EntityId));
         _exportWindows[target.EntityId] = window;
         _windows.AddWindow(window);
     }

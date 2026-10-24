@@ -45,10 +45,42 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 28 | MCDF | Save your own character as `.mcdf` in PlayerSync; Open MCDF Snapshot... in an export window | Shown as "Saved snapshot (not live)"; matching runs; nothing is applied to any character. |
 | 29 | Library safety | Choose the export folder (or a folder inside it) as the library | Refused with a message. |
 
+## Live acceptance checklist (0.5 capture reliability)
+
+Status: **not run** for every row. Record the actual outcome and an `/xllog` excerpt next to each row when it is run.
+Do not mark a row passed from these expectations.
+
+| # | Check | Steps | Expected | Outcome |
+|---|---|---|---|---|
+| 30 | Synced detection | Open the window for a ZoneSync character after the join delay | Lookup Found; files listed | not run |
+| 31 | Not yet joined | Open the window within the ZoneSync join delay after zoning | "not synced"; Refresh after the delay lists files | not run |
+| 32 | Unsynced player | Open the window for a player PlayerSync does not handle | "not synced"; nothing exportable | not run |
+| 33 | Initial snapshot | Open the window, compare with Penumbra's On-Screen tab | Same files; notes say nothing is "no longer in use" | not run |
+| 34 | Seen loading | B plays a modded emote with the window open | Its .pap/.avfx/.scd appear with "seen loading" | not run |
+| 35 | Outfit change | B changes a modded top, then Refresh | Old top files "no longer in use" and unselected; new ones selected | not run |
+| 36 | Package after change | Export after row 35 | Package and item mods contain only the new top; manifest `Activity` says NoLongerActive for the old | not run |
+| 37 | PlayerSync reapply | B changes mods so PlayerSync sends new data; Refresh | Replaced files "no longer in use"; state settles to loaded | not run |
+| 38 | Despawn | B teleports away with the window open | Export fails "no longer nearby"; no files of whoever appears later | not run |
+| 39 | Respawn | B comes back | Files recorded again from scratch | not run |
+| 40 | Own zone change | You teleport to another zone where B also is | Earlier files gone; B's files recorded again in the new zone | not run |
+| 41 | Instance change | Change instance in a field zone | Same as row 40 | not run |
+| 42 | Crowd | Export B in a busy town | Only B's files; nothing from players around B | not run |
+| 43 | Permissions | Disable VFX for the zone group in PlayerSync | B's VFX files are not listed (PlayerSync does not apply them) | not run |
+| 44 | Duty or PvP | Repeat row 30 inside a duty (dungeon sync on) | Same as row 30 | not run |
+| 45 | MCDF valid | Open your own fresh MCDF | All entries Verified; coverage partial; packages with animations at most Strong | not run |
+| 46 | MCDF damaged | Open a truncated copy (cut the file in half) | A readable error, or MissingPayload entries; the original file unchanged | not run |
+| 47 | Library match evidence | Match Live; hover a package | Tooltip shows matched, only-in-this-package, not seen and not comparable counts | not run |
+| 48 | Responsiveness | Open the window for a character with many mods; Refresh repeatedly | No visible frame hitch; hashing runs in the background | not run |
+| 49 | Unload | Disable the exporter while a window is open and B is tracked | No errors in `/xllog`; no event handlers left (re-enable works) | not run |
+
 ## Automated tests (run in the development environment)
 
-Last run for 0.4.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 168 passed, 0 failed (0.4.1.0);
+Last run for 0.5.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 193 passed, 0 failed;
 `CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. The patched PlayerSync (`playersync-fork/apply.sh`,
-upstream b2f8ce8) built successfully with the 0.4 contracts. These cover the resolver, the package reader for every
+upstream b2f8ce8) built successfully with the 0.5 contracts. New in 0.5: tracker lifecycle (tree and event sources,
+outfit change, replacement, out-of-order and duplicate events, reset, size bounds, concurrency), activity in the
+state, selection and packages, malformed MCDF files (truncated, trailing data, invalid hash or path, conflicting
+paths, header limits, invalid JSON, wrong version, damaged LZ4), PlayerSync's MCDF writer rules, and match evidence
+(source, coverage, unique matches, files the evidence cannot contain). These cover the resolver, the package reader for every
 group type, the index cache, matching statuses, original export (verification, conflicts, changed packages,
 library/export overlap), categories and overrides, and the MCDF reader, but not the game, Dalamud or Penumbra UI.

@@ -36,7 +36,7 @@ public sealed class FakePenumbraSource : IPlayerSyncExportApi, IDisposable
     public (ProviderStatus Status, int Version) Probe() => (ProviderStatus.Available, 0);
 
     public CharacterResolution Resolve(uint entityId)
-        => PenumbraResolution.Build(Name, Handled, Tracker.Snapshot(), CacheFolder, ModFolder, _hashes, Tracker.LastChangeUtc, Now, Vanilla);
+        => PenumbraResolution.Build(Name, Handled, Tracker.Snapshot(), CacheFolder, ModFolder, _hashes, Tracker.LastChangeUtc, Now, Vanilla, Tracker.Truncated);
 
     /// <summary>Stands in for the game's own files.</summary>
     public Dictionary<string, byte[]> GameFiles { get; } = new(StringComparer.Ordinal);
@@ -95,8 +95,134 @@ public class LoadedResourceTrackerTests
 
         var snapshot = tracker.Snapshot();
         Assert.Single(snapshot);
-        Assert.Equal(["chara/equipment/a.tex", "chara/equipment/c.tex"], snapshot["/cache/aa.tex"]);
+        Assert.Equal(["chara/equipment/a.tex", "chara/equipment/c.tex"], snapshot["/cache/aa.tex"].GamePaths);
         Assert.Equal(now, tracker.LastChangeUtc);
+    }
+
+    private static Dictionary<string, HashSet<string>> Tree(params (string File, string GamePath)[] entries)
+        => entries.GroupBy(e => e.File).ToDictionary(g => g.Key, g => g.Select(e => e.GamePath).ToHashSet());
+
+    [Fact]
+    public void TreeEventsAndLaterTreesGiveEachFileItsActivity()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var tracker = new LoadedResourceTracker(() => now);
+        tracker.Merge(Tree(("/cache/top.tex", "chara/top.tex"), ("/cache/hair.mdl", "chara/hair.mdl")));
+        now = now.AddSeconds(1);
+        tracker.Record("chara/emote.pap", "/cache/emote.pap");
+        var first = tracker.Snapshot();
+        Assert.Equal(ResourceActivity.Active, first["/cache/top.tex"].Activity);
+        Assert.Equal(ObservationSource.InitialSnapshot, first["/cache/top.tex"].FirstSource);
+        Assert.Equal(ResourceActivity.ObservedLoaded, first["/cache/emote.pap"].Activity);
+        Assert.Equal(ObservationSource.Event, first["/cache/emote.pap"].FirstSource);
+
+        // Outfit change: the next tree has a new top and no hair model.
+        now = now.AddSeconds(1);
+        tracker.Merge(Tree(("/cache/top2.tex", "chara/top.tex")));
+        var second = tracker.Snapshot();
+        Assert.Equal(ResourceActivity.Active, second["/cache/top2.tex"].Activity);
+        Assert.Equal(ObservationSource.LaterSnapshot, second["/cache/top2.tex"].FirstSource);
+        Assert.Equal(ResourceActivity.NoLongerActive, second["/cache/top.tex"].Activity);
+        Assert.Equal(["chara/top.tex"], second["/cache/top.tex"].GamePaths);
+        Assert.Equal(ResourceActivity.NoLongerActive, second["/cache/hair.mdl"].Activity);
+        // The tree never lists animations, so their absence from it says nothing.
+        Assert.Equal(ResourceActivity.ObservedLoaded, second["/cache/emote.pap"].Activity);
+        Assert.Equal(now, tracker.LastChangeUtc);
+        Assert.Equal(2, tracker.SnapshotCount);
+    }
+
+    [Fact]
+    public void FileSeenLoadingAgainAfterLeavingTheTreeIsObservedAndATreeBringsItBack()
+    {
+        var tracker = new LoadedResourceTracker();
+        tracker.Merge(Tree(("/cache/a.tex", "chara/a.tex")));
+        tracker.Merge(Tree());
+        Assert.Equal(ResourceActivity.NoLongerActive, tracker.Snapshot()["/cache/a.tex"].Activity);
+
+        tracker.Record("chara/a.tex", "/cache/a.tex");
+        Assert.Equal(ResourceActivity.ObservedLoaded, tracker.Snapshot()["/cache/a.tex"].Activity);
+        tracker.Merge(Tree());
+        Assert.Equal(ResourceActivity.NoLongerActive, tracker.Snapshot()["/cache/a.tex"].Activity);
+        tracker.Merge(Tree(("/cache/a.tex", "chara/a.tex")));
+        Assert.Equal(ResourceActivity.Active, tracker.Snapshot()["/cache/a.tex"].Activity);
+    }
+
+    [Fact]
+    public void NoTreeChangesNothingAndAFileKeepsItsMostCurrentGamePath()
+    {
+        var tracker = new LoadedResourceTracker();
+        tracker.Merge(Tree(("/cache/a.tex", "chara/a.tex"), ("/cache/a.tex", "chara/b.tex")));
+        tracker.Merge(null);
+        Assert.Equal(1, tracker.SnapshotCount);
+        Assert.Equal(ResourceActivity.Active, tracker.Snapshot()["/cache/a.tex"].Activity);
+
+        // Still used for one of its game paths: the file is active.
+        tracker.Merge(Tree(("/cache/a.tex", "chara/a.tex"), ("/cache/c.tex", "chara/b.tex")));
+        var snapshot = tracker.Snapshot();
+        Assert.Equal(ResourceActivity.Active, snapshot["/cache/a.tex"].Activity);
+        Assert.Equal(["chara/a.tex"], snapshot["/cache/a.tex"].GamePaths);
+    }
+
+    [Fact]
+    public void OutOfOrderAndDuplicateEventsKeepTheFirstSightingAndTheLatestFile()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var tracker = new LoadedResourceTracker(() => now);
+        tracker.Record("chara/a.tex", "/cache/a.tex");
+        now = now.AddSeconds(5);
+        tracker.Record("chara/a.tex", "/cache/a.tex");
+        var entry = tracker.Snapshot()["/cache/a.tex"];
+        Assert.Equal(DateTimeOffset.UnixEpoch, entry.FirstSeenUtc);
+        Assert.Equal(now, entry.LastSeenUtc);
+        Assert.Equal(DateTimeOffset.UnixEpoch, tracker.LastChangeUtc);
+
+        tracker.Record("chara/a.tex", "/cache/b.tex");
+        var snapshot = tracker.Snapshot();
+        Assert.Equal(ResourceActivity.ObservedLoaded, snapshot["/cache/b.tex"].Activity);
+        Assert.Equal(ResourceActivity.NoLongerActive, snapshot["/cache/a.tex"].Activity);
+        Assert.Equal(1, tracker.Count);
+    }
+
+    [Fact]
+    public void ResetForgetsEverythingIncludingHistory()
+    {
+        var tracker = new LoadedResourceTracker();
+        tracker.Merge(Tree(("/cache/a.tex", "chara/a.tex")));
+        tracker.Record("chara/a.tex", "/cache/b.tex");
+        tracker.Reset();
+        Assert.Empty(tracker.Snapshot());
+        Assert.Equal(0, tracker.SnapshotCount);
+        tracker.Merge(Tree(("/cache/c.tex", "chara/c.tex")));
+        Assert.Equal(ObservationSource.InitialSnapshot, tracker.Snapshot()["/cache/c.tex"].FirstSource);
+    }
+
+    [Fact]
+    public void SizeIsBounded()
+    {
+        var tracker = new LoadedResourceTracker();
+        for (var i = 0; i < LoadedResourceTracker.MaxEntries + 10; i++) tracker.Record($"chara/{i}.tex", $"/cache/{i}.tex");
+        Assert.Equal(LoadedResourceTracker.MaxEntries, tracker.Count);
+        Assert.True(tracker.Truncated);
+
+        // Replacements of known game paths still count, and the history of replaced files is bounded too.
+        for (var i = 0; i < LoadedResourceTracker.MaxReplaced + 10; i++) tracker.Record("chara/0.tex", $"/cache/r{i}.tex");
+        Assert.Equal(LoadedResourceTracker.MaxEntries + LoadedResourceTracker.MaxReplaced, tracker.Snapshot().Count);
+        tracker.Reset();
+        Assert.False(tracker.Truncated);
+    }
+
+    [Fact]
+    public void ConcurrentEventsAndTreesAreSafe()
+    {
+        var tracker = new LoadedResourceTracker();
+        Parallel.For(0, 2000, i =>
+        {
+            if (i % 100 == 0) tracker.Merge(Tree(("/cache/t.tex", "chara/t.tex")));
+            else tracker.Record($"chara/{i % 300}.tex", $"/cache/{i % 300}.tex");
+            if (i % 50 == 0) _ = tracker.Snapshot();
+        });
+        // Paths 0, 100 and 200 only come up on the tree iterations; the tree adds chara/t.tex.
+        Assert.Equal(297 + 1, tracker.Count);
     }
 
     [Fact]
@@ -177,6 +303,25 @@ public class PenumbraResolutionTests
         Assert.Empty(src.Resolve(1).Files);
         src.Handled = null;
         Assert.Equal(CharacterLookup.NotConnected, src.Resolve(1).State.Lookup);
+    }
+
+    [Fact]
+    public void FilesNoLongerInUseAreListedButDoNotMakeTheSetIncomplete()
+    {
+        using var dir = new TempDir();
+        using var src = new FakePenumbraSource(dir);
+        var old = src.AddCacheFile("tex", "old top");
+        var current = src.AddCacheFile("tex", "new top");
+        src.Tracker.Merge(new Dictionary<string, HashSet<string>> { [old] = ["chara/top.tex"] });
+        src.Tracker.Merge(new Dictionary<string, HashSet<string>> { [current] = ["chara/top.tex"] });
+        File.Delete(old);
+        src.Settle();
+
+        var state = src.Resolve(1).State;
+        Assert.Equal(SyncState.Complete, state.SyncState);
+        Assert.Equal(ResourceActivity.NoLongerActive, state.Resources.Single(r => r.Availability == ResourceAvailability.Missing).Activity);
+        Assert.Equal(ResourceActivity.Active, state.Resources.Single(r => r.Availability == ResourceAvailability.Available).Activity);
+        Assert.Contains(state.Notes, n => n.Contains("no longer in use"));
     }
 
     [Fact]
@@ -285,6 +430,48 @@ public class PenumbraSourceExportTests
         var outcome = await export;
 
         Assert.True(outcome.Success, outcome.Message);
+    }
+
+    [Fact]
+    public async Task FilesNoLongerInUseStartUnselectedAndNeverEnterPackages()
+    {
+        using var dir = new TempDir();
+        using var src = new FakePenumbraSource(dir);
+        const string gamePath = "chara/equipment/e0001/texture/v01_c0101e0001_top_n.tex";
+        var old = src.AddCacheFile("tex", "old top");
+        var current = src.AddCacheFile("tex", "new top");
+        src.Tracker.Merge(new Dictionary<string, HashSet<string>> { [old] = [gamePath] });
+        src.Settle();
+        var parent = dir.Sub("parent");
+        var folders = new ExportFolderService(() => [src.CacheFolder, src.ModFolder]);
+        var coordinator = new ExportCoordinator(src, folders, "0.5.0.0", (_, _) => Task.Delay(5));
+        using var session = new ExportSession(new ExportTarget(1, "Alpha Beta", "World"), src, folders, coordinator,
+            () => Settings.For(parent), _ => Task.FromResult(true), (_, t) => Task.Delay(1, t));
+        await session.RefreshAsync();
+        Assert.True(Assert.Single(session.Inventory.Assets).Selected);
+
+        src.Tracker.Merge(new Dictionary<string, HashSet<string>> { [current] = [gamePath] });
+        src.Settle();
+        await session.RefreshAsync();
+        var oldHash = Path.GetFileNameWithoutExtension(old).ToUpperInvariant();
+        var oldRow = session.Inventory.Assets.Single(a => a.CacheHash == oldHash);
+        Assert.Equal(ResourceActivity.NoLongerActive, oldRow.Activity);
+        Assert.False(oldRow.Selected);
+        Assert.True(session.Inventory.Assets.Single(a => a.CacheHash != oldHash).Selected);
+
+        // Even exported on purpose, the old file stays out of the package, which would otherwise map the game path twice.
+        oldRow.Selected = true;
+        await session.ExportSelectedAsync();
+        Assert.Null(session.LastError);
+        var manifest = session.LastOutcome!.Manifest!;
+        Assert.Equal(2, manifest.ManifestVersion);
+        var oldAsset = manifest.Assets.Single(a => a.CacheHash == oldHash);
+        Assert.Equal("NoLongerActive", oldAsset.Activity);
+        Assert.NotNull(oldAsset.ExportedFile);
+        Assert.False(oldAsset.InInstallablePackage);
+        Assert.True(manifest.Assets.Single(a => a.CacheHash != oldHash).InInstallablePackage);
+        var package = Assert.Single(manifest.InstallablePackages, p => p.Item == null);
+        Assert.Equal(1, package.Files);
     }
 
     [Fact]

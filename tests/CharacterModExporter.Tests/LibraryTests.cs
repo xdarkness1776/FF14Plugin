@@ -187,6 +187,32 @@ public class PackageMatcherTests
     }
 
     [Fact]
+    public void EvidenceCountsSeparateSharedFromUniqueMatches()
+    {
+        var a = Package("001 A.pmp", (0, "chara/shared.tex", "s"), (0, "chara/a.mdl", "a"));
+        var b = Package("002 B.pmp", (0, "chara/shared.tex", "s"));
+        var report = PackageMatcher.Match([TestPmp.Res("chara/shared.tex", "s"), TestPmp.Res("chara/a.mdl", "a")], [a, b], context: MatchContext.ExportIpc);
+
+        var ma = report.Packages.Single(m => m.Package.RelativePath == "001 A.pmp");
+        var mb = report.Packages.Single(m => m.Package.RelativePath == "002 B.pmp");
+        Assert.Equal((MatchStatus.Exact, 2, 1), (ma.Status, ma.MatchedPaths.Count, ma.UniqueMatchedCount));
+        Assert.Equal((MatchStatus.Ambiguous, 1, 0), (mb.Status, mb.MatchedPaths.Count, mb.UniqueMatchedCount));
+        Assert.Equal(["001 A.pmp"], mb.SharedWith);
+        Assert.Equal(MatchStatus.Ambiguous, report.Resources.Single(r => r.Resource.GamePaths[0] == "chara/shared.tex").Status);
+        Assert.Equal(MatchCoverage.Complete, report.Coverage);
+    }
+
+    [Fact]
+    public void WithoutAContextNothingIsTreatedAsNotCapturable()
+    {
+        var pkg = Package("001 A.pmp", (0, "chara/a.mdl", "a"), (0, "chara/emote.pap", "p"));
+        var report = PackageMatcher.Match([TestPmp.Res("chara/a.mdl", "a")], [pkg]);
+        var m = Assert.Single(report.Packages);
+        Assert.Equal((1, 0), (m.UnseenCount, m.NotCapturableCount));
+        Assert.Equal(MatchCoverage.Unknown, report.Coverage);
+    }
+
+    [Fact]
     public void FilesNotSeenOnTheCharacterMakeItStrongNotExact()
     {
         var pkg = Package("001 A.pmp", (0, "chara/a.mdl", "a"), (0, "chara/c0801.mdl", "other race"));
@@ -540,6 +566,166 @@ public class McdfReaderTests
         Assert.Null(McdfReader.ToResources(snap)[1].SourceHash);
     }
 
+    /// <summary>Writes an MCDF from a raw header and payloads, so malformed files can be built.</summary>
+    private static string WriteRaw(string path, object header, IEnumerable<byte[]> payloads, byte[]? trailing = null, int? lengthOverride = null)
+    {
+        var json = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(header));
+        using var fs = File.Create(path);
+        using var lz4 = new LZ4Stream(fs, LZ4StreamMode.Compress, LZ4StreamFlags.HighCompression);
+        using var w = new BinaryWriter(lz4);
+        w.Write("MCDF"u8);
+        w.Write((byte)1);
+        w.Write(lengthOverride ?? json.Length);
+        w.Write(json);
+        foreach (var b in payloads) w.Write(b);
+        if (trailing != null) w.Write(trailing);
+        return path;
+    }
+
+    private static object Entry(string[] paths, string content, string? hash = null)
+        => new { GamePaths = paths, Length = Encoding.UTF8.GetByteCount(content), Hash = hash ?? TestPmp.Sha1(content) };
+
+    private static byte[] B(string s) => Encoding.UTF8.GetBytes(s);
+
+    [Fact]
+    public void ATruncatedFileMarksTheRestMissingInsteadOfFailing()
+    {
+        using var dir = new TempDir();
+        var path = WriteRaw(Path.Combine(dir.Path, "cut.mcdf"),
+            new { Files = new[] { Entry(["chara/a.mdl"], "model"), Entry(["chara/b.mdl"], "second"), Entry(["chara/c.mdl"], "third") } },
+            [B("model"), B("sec")]);
+
+        var snap = McdfReader.Read(path);
+
+        Assert.Equal([McdfFileStatus.Verified, McdfFileStatus.MissingPayload, McdfFileStatus.MissingPayload], snap.Files.Select(f => f.Status));
+        Assert.Contains(snap.Warnings, w => w.Contains("2 file(s) have no stored bytes"));
+        Assert.Single(McdfReader.ToResources(snap), r => r.SourceHash != null);
+    }
+
+    [Fact]
+    public void TrailingDataIsReported()
+    {
+        using var dir = new TempDir();
+        var path = WriteRaw(Path.Combine(dir.Path, "extra.mcdf"), new { Files = new[] { Entry(["chara/a.mdl"], "model") } }, [B("model")], B("appended"));
+        var snap = McdfReader.Read(path);
+        Assert.True(snap.AllVerified);
+        Assert.Contains(snap.Warnings, w => w.Contains("8 byte(s) after the stored files"));
+    }
+
+    [Fact]
+    public void EntriesThatCannotBeEvidenceSayWhy()
+    {
+        using var dir = new TempDir();
+        var path = WriteRaw(Path.Combine(dir.Path, "odd.mcdf"), new
+        {
+            Files = new[]
+            {
+                Entry(["chara/a.mdl"], "model", hash: "not-a-hash"),
+                Entry(["C:/Windows/evil.dll", "../x"], "nowhere"),
+                Entry(["chara/same.tex"], "one"),
+                Entry(["chara/same.tex"], "two"),
+                Entry(["chara/ok.tex"], "fine"),
+            },
+        }, [B("model"), B("nowhere"), B("one"), B("two"), B("fine")]);
+
+        var snap = McdfReader.Read(path);
+
+        Assert.Equal([McdfFileStatus.InvalidHash, McdfFileStatus.InvalidPath, McdfFileStatus.ConflictingGamePath, McdfFileStatus.ConflictingGamePath, McdfFileStatus.Verified],
+            snap.Files.Select(f => f.Status));
+        Assert.Equal(1, McdfReader.ToResources(snap).Count(r => r.SourceHash != null));
+        Assert.Contains(snap.Warnings, w => w.Contains("claimed by stored files with different content"));
+    }
+
+    [Fact]
+    public void HeaderOnlyReadLeavesFilesUnverified()
+    {
+        using var dir = new TempDir();
+        var path = WriteRaw(Path.Combine(dir.Path, "h.mcdf"), new { Files = new[] { Entry(["chara/a.mdl"], "model") } }, [B("model")]);
+        var snap = McdfReader.Read(path, verifyContents: false);
+        Assert.Equal(McdfFileStatus.NotRead, Assert.Single(snap.Files).Status);
+        Assert.Null(Assert.Single(McdfReader.ToResources(snap)).SourceHash);
+    }
+
+    [Fact]
+    public void MalformedFilesAreRejectedWithAReadableReason()
+    {
+        using var dir = new TempDir();
+        var header = new { Files = new[] { Entry(["chara/a.mdl"], "model") } };
+
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "len.mcdf"), header, [], lengthOverride: McdfReader.MaxHeaderBytes + 1)));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "neg.mcdf"), header, [], lengthOverride: -5)));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "short.mcdf"), header, [], lengthOverride: 100_000)));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "neglen.mcdf"),
+            new { Files = new[] { new { GamePaths = new[] { "chara/a.mdl" }, Length = -1, Hash = TestPmp.Sha1("x") } } }, [])));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "huge.mcdf"),
+            new { Files = new[] { new { GamePaths = new[] { "chara/a.mdl" }, Length = McdfReader.MaxFileBytes + 1, Hash = TestPmp.Sha1("x") } } }, [])));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(WriteRaw(Path.Combine(dir.Path, "total.mcdf"),
+            new { Files = Enumerable.Range(0, 17).Select(i => new { GamePaths = new[] { $"chara/{i}.mdl" }, Length = McdfReader.MaxFileBytes, Hash = TestPmp.Sha1("x") }).ToArray() }, [])));
+
+        var badJson = Path.Combine(dir.Path, "json.mcdf");
+        using (var fs = File.Create(badJson))
+        using (var lz4 = new LZ4Stream(fs, LZ4StreamMode.Compress, LZ4StreamFlags.HighCompression))
+        using (var w = new BinaryWriter(lz4))
+        {
+            w.Write("MCDF"u8);
+            w.Write((byte)1);
+            w.Write(5);
+            w.Write("{nope"u8);
+        }
+
+        Assert.Contains("not valid JSON", Assert.Throws<InvalidDataException>(() => McdfReader.Read(badJson)).Message);
+
+        var version = Path.Combine(dir.Path, "v2.mcdf");
+        using (var fs = File.Create(version))
+        using (var lz4 = new LZ4Stream(fs, LZ4StreamMode.Compress, LZ4StreamFlags.HighCompression))
+            lz4.Write("MCDF\u0002\0\0\0\0"u8);
+        Assert.Contains("version 2", Assert.Throws<InvalidDataException>(() => McdfReader.Read(version)).Message);
+
+        // Not LZ4 at all, and LZ4 damaged in the middle.
+        var plain = Path.Combine(dir.Path, "plain.mcdf");
+        File.WriteAllBytes(plain, Encoding.UTF8.GetBytes(new string('x', 4096)));
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(plain));
+        var good = WriteRaw(Path.Combine(dir.Path, "dmg.mcdf"), header, [B("model")]);
+        var bytes = File.ReadAllBytes(good);
+        for (var i = 12; i < bytes.Length; i++) bytes[i] ^= 0x5A;
+        File.WriteAllBytes(good, bytes);
+        Assert.Throws<InvalidDataException>(() => McdfReader.Read(good));
+    }
+
+    [Theory]
+    [InlineData("chara/human/c0101/animation/a0001/bt_common/emote/sit.pap", true)]
+    [InlineData("chara/action/x.tmb", true)]
+    [InlineData("sound/voice/x.scd", true)]
+    [InlineData("vfx/common/eff/x.avfx", true)]
+    [InlineData("vfx/common/texture/x.atex", true)]
+    [InlineData("chara/equipment/e0001/vfx/eff/ve0001.avfx", false)]
+    [InlineData("chara/weapon/w0101/obj/body/b0001/vfx/texture/x.atex", false)]
+    [InlineData("chara/equipment/e0001/model/c0101e0001_top.mdl", false)]
+    public void WriterRulesMatchPlayerSync(string gamePath, bool excluded)
+        => Assert.Equal(excluded, McdfWriterRules.IsExcluded(gamePath));
+
+    [Fact]
+    public void AnMcdfNeverMakesAPackageWithAnimationsExact()
+    {
+        using var dir = new TempDir();
+        var path = WriteRaw(Path.Combine(dir.Path, "look.mcdf"), new { Files = new[] { Entry(["chara/equipment/e0001/model/top.mdl"], "model") } }, [B("model")]);
+        var snap = McdfReader.Read(path);
+        var pkg = new PmpPackage { RelativePath = "001 Emote.pmp", FileName = "001 Emote.pmp", Sha256 = "x" };
+        pkg.Containers.Add(new PmpContainer());
+        pkg.Payloads.Add(new PmpPayload { Container = 0, GamePath = "chara/equipment/e0001/model/top.mdl", RelativePath = "a", Sha1 = TestPmp.Sha1("model") });
+        pkg.Payloads.Add(new PmpPayload { Container = 0, GamePath = "chara/human/c0101/animation/a0001/bt_common/emote/sit.pap", RelativePath = "b", Sha1 = TestPmp.Sha1("anim") });
+
+        var report = PackageMatcher.Match(McdfReader.ToResources(snap), [pkg], context: MatchContext.Mcdf);
+
+        var m = Assert.Single(report.Packages);
+        Assert.Equal(MatchStatus.Strong, m.Status);
+        Assert.Equal(1, m.NotCapturableCount);
+        Assert.Equal(0, m.UnseenCount);
+        Assert.Equal(MatchSource.McdfSnapshot, report.Source);
+        Assert.Equal(MatchCoverage.Partial, report.Coverage);
+        Assert.Contains(m.Reasons, r => r.Contains("never contains"));
+    }
+
     [Fact]
     public void RejectsOtherFiles()
     {
@@ -608,7 +794,8 @@ public class OriginalPackageSessionTests
         Assert.Equal(File.ReadAllBytes(Path.Combine(lib, "0042 Top.pmp")), File.ReadAllBytes(copied));
 
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(session.LastOriginalExportFolder!, OriginalPackagesManifest.FileName))).RootElement;
-        Assert.Equal(1, manifest.GetProperty("ManifestVersion").GetInt32());
+        Assert.Equal(2, manifest.GetProperty("ManifestVersion").GetInt32());
+        Assert.Equal("Complete", manifest.GetProperty("EvidenceCoverage").GetString());
         Assert.Equal("Live", manifest.GetProperty("Evidence").GetString());
         Assert.Equal(1, manifest.GetProperty("NotFoundInLibrary").GetArrayLength());
         Assert.Equal(libraryBefore, Snapshot.Of(lib));
