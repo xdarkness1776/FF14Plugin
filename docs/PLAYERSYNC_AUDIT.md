@@ -103,3 +103,39 @@ PlayerSync applied from Penumbra instead:
   available (as before); file swaps resolve to game paths and are not listed.
 
 The export IPC patch stays available as an optional source with the complete mapping and the real sync state.
+
+## Update (0.4): re-audit for original-package matching
+
+Upstream `origin/main` was fetched again on 2026-10-24 and is still `b2f8ce894edbaafda6fbda3c84b5561b878e513c`, so the
+pinned revision is the latest one. Findings that matter for matching and for the export IPC:
+
+* **Filters (`Pair.RemoveNotSyncedFiles`).** An entry is dropped when *any* of its game paths ends in `scd` (sounds),
+  `tmb`/`pap` (animations) or `atex`/`avfx` (VFX), according to the pair's and your own permissions, the global
+  filters (unless the UID/alias is in `UIDsToOverrideFilter`, or the pair is a bidirectional direct pair and
+  `DoFilteringBidirectionDirectPairs` is off) and the ZoneSync filters for ZoneSync-only pairs. Minion/mount and
+  pet/companion objects can be emptied completely. Filtered files are never downloaded, so they can never be
+  matched; the export IPC's `GetFilteredLastReceivedData` applies the same function.
+* **Replacements vs swaps (`TryCalculateModdedDictionary`).** Entries with a hash become `(gamePath, hash) → local
+  file` for every game path; entries with a `FileSwapPath` become `(gamePath, null) → target game path`.
+* **Compressed alternates.** `CompressedAlternateUsage` is `AlwaysSourceQuality` (never substitute),
+  `CompressedNewDownloads` (substitute only when the original is not cached) or `AlwaysCompressed`. A substitution
+  records `ActiveCompressionRedirects[sourceHash] = alternateHash` and keys the mapping by the alternate hash. The map
+  is cleared at the start of each download pass. The IPC therefore reports both hashes, and matching uses the source
+  hash.
+* **Validation (`ApplyDataApplicationAsync`).** With `EnableValidationChecks`, every `(gamePath, hash)` entry is
+  checked on its own: crash-level files are removed for that path, and swaps whose target belongs to an expansion that
+  is not installed are removed. A resource can thus survive for some of its game paths and not for others.
+* **Deferrals and freshness.** Application is deferred in combat, cutscenes and GPose, for invalid objects and for an
+  unchanged data hash; the IPC's snapshot is replaced only after an application finished, and only changes its file
+  mapping when the files were re-applied (`updateModdedPaths`).
+
+### Resolver defects fixed in 0.4
+
+`ResourceResolver.Resolve` looked up only the **first** game path of each resource. If PlayerSync's validation
+removed that one path, or the first path was absent from the mapping, the whole resource was reported as missing or
+excluded even though other paths were applied; validation exclusions of file swaps were not reported at all, and
+lookups depended on the case of hashes and paths. It now checks every path (case-insensitively), lists only the
+applied paths in `GamePaths`, reports dropped ones in `ExcludedGamePaths` / `MissingGamePaths`, reports a swap that
+validation removed as `ExcludedByValidation`, and recognizes exclusions recorded under either the source or the
+compressed hash. Regression tests: `ResourceResolverTests` (multi-path, missing first path, per-path validation,
+redirect on every path, case, swaps, empty path list). The stock Penumbra source and the read-only resync are unchanged.

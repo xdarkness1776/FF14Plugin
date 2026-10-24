@@ -1,7 +1,7 @@
 # Manual acceptance test plan
 
-None of these have been run yet: the development environment has no game client, Dalamud runtime or PlayerSync
-server. Use two test characters you control (A runs the exporter, B is the remote character) in a ZoneSync-enabled
+None of these have been run yet (status: **not run** for every row): the development environment has no game
+client, Dalamud runtime or PlayerSync server. Automated tests that did run are listed at the end. Use two test characters you control (A runs the exporter, B is the remote character) in a ZoneSync-enabled
 area (for example a town), with no direct pair between them. Record pass/fail and `/xllog` excerpts.
 
 | # | Check | Steps | Expected |
@@ -34,3 +34,21 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 | 20 | Without Penumbra / PlayerSync | Disable Penumbra, then PlayerSync, and open the window each time | A red Source line says which one is not loaded; nothing is exported. |
 | 21 | Release build | Install from the custom repository | Loads next to the official PlayerSync; version matches the release. |
 | 22 | Repo install/update | Only if hosting is public | Installs from repo.json; bumping the version shows an update. |
+| 23 | Library index | Settings → Original Package Library → choose your `.pmp` folder → Save and Index Library | Progress bar, then "Indexed: N package(s)". Library folder unchanged (compare a file listing with sizes and times before/after). |
+| 24 | Re-index | Index again without changes; then add, rename and delete one package and index again | First: everything "unchanged". Second: 1 read per new/renamed file, removed ones counted. |
+| 25 | Live match | Character B wears a mod you have as a numbered `.pmp`; Original Packages → Match Live Character | That package is listed as Exact or Strong with the option B uses; unrelated packages are not listed. |
+| 25a | Variants | Your package has colour options; B uses one | The used option is shown under "Options used"; the package is not Partial because of the other colours. |
+| 25b | Compressed textures | Turn on PlayerSync's compressed textures for downloads; match again | Textures show as "Cannot compare" (stock source) instead of making the package Partial. |
+| 26 | Export originals | Select the matched packages → Export Selected Originals | `Original packages\` holds byte-identical copies (same file name and number, same SHA-256 as the library); `OriginalPackages.json` lists them. |
+| 26a | No overwrite | Put a different file with the same name in `Original packages\`, export again | Reported as a conflict; the file is untouched. |
+| 27 | Overrides | Change a package's category and tick Confirmed; restart the game | Both are kept; the package file is unchanged; `package-overrides.json` is in the plugin settings folder. |
+| 28 | MCDF | Save your own character as `.mcdf` in PlayerSync; Open MCDF Snapshot... in an export window | Shown as "Saved snapshot (not live)"; matching runs; nothing is applied to any character. |
+| 29 | Library safety | Choose the export folder (or a folder inside it) as the library | Refused with a message. |
+
+## Automated tests (run in the development environment)
+
+Last run for 0.4.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 165 passed, 0 failed;
+`CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. The patched PlayerSync (`playersync-fork/apply.sh`,
+upstream b2f8ce8) built successfully with the 0.4 contracts. These cover the resolver, the package reader for every
+group type, the index cache, matching statuses, original export (verification, conflicts, changed packages,
+library/export overlap), categories and overrides, and the MCDF reader, but not the game, Dalamud or Penumbra UI.

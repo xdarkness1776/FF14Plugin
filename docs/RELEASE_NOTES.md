@@ -2,6 +2,15 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.4.0.0: original packages. Choose the folder with your own (numbered) `.pmp` files in Settings and index it. The
+export window's **Original Packages** view then shows which of those packages the character's files come from, with
+an explicit status (Exact, Strong, Partial, Ambiguous; files in no package or not comparable are listed too), the
+options used and a category you can change. **Export Selected Originals** copies the chosen packages byte for byte,
+checked with SHA-256, into `Original packages\` with `OriginalPackages.json`; nothing existing is replaced. Saved MCDF
+files can be compared as a separate snapshot without being applied. The PlayerSync IPC resolver now checks every game
+path of a resource (not only the first), handles validation exclusions per path and for file swaps, and reports
+which paths were dropped. Not tested in game yet; see docs/ORIGINAL_PACKAGES.md.
+
 0.3.3.0: mods keep their own files. The exporter reads the file names stored inside materials, animation timelines,
 animations and effects, so emotes and battle animations keep their VFX and sounds, gear keeps its own effects,
 custom textures stay with the material that uses them, and the body deformer goes with body mods. Skeleton and

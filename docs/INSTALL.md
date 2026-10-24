@@ -42,6 +42,7 @@ page). CI runs keep it as the `packages` artifact.
     Assets\<sha1>.<ext>          raw game resources, PlayerSync cache names
     Mods\<Group>\<Category>\<Item> (<supports>) [<Name>].pmp   one Penumbra mod per item
     Installable\<Name> (exported).pmp   the whole character, only when every listed file was exported
+    Original packages\...\<your file>.pmp   your original packages, copied unchanged (only when you export them)
     Manifest.json
     README.txt
 ```
@@ -79,6 +80,13 @@ page). CI runs keep it as the `packages` artifact.
 7. To use a `.pmp`: Penumbra → Mods → Import Mod → pick the file → enable it in a collection. Nothing is
    installed or enabled automatically. Because only loaded files are listed, a package may miss emotes or effects
    that never played; meta manipulations are never included.
+
+8. **Original Packages** (button in the export window): if you keep your original mods as `.pmp` files, choose that
+   folder under Settings → Original Package Library and index it once. Then **Match Live Character** lists the
+   packages the character's files come from (Exact, Strong, Partial, Ambiguous), and **Export Selected Originals**
+   copies them unchanged into `Original packages\` next to the other exports, with `OriginalPackages.json`.
+   **Open MCDF Snapshot...** compares a saved `.mcdf` file instead, without applying it. Details:
+   [ORIGINAL_PACKAGES.md](ORIGINAL_PACKAGES.md).
 
 Settings (`/cmexport` or the cog in `/xlplugins`): parent folder (folder picker or typed path, validated),
 export folder name, reuse vs. timestamped folders, shared pool for files used by several characters, building the

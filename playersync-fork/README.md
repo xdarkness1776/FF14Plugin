@@ -30,6 +30,11 @@ It does not change syncing, downloads, the cache, its index, or the configuratio
 | `PlayerSync.Export.GetExportStatus` | `Func<string, string>` | Job id to `ExportJobStatusDto` JSON. |
 | `PlayerSync.Export.CancelExport` | `Func<string, bool>` | Cancels a job. |
 
+`ResourceDto` gained two optional fields in 0.4.0.0 without a version change (older readers ignore them):
+`ExcludedGamePaths` (paths PlayerSync's validation removed) and `MissingGamePaths` (paths of an applied resource that
+are not in PlayerSync's mapping). For an available resource, `GamePaths` now lists only the paths PlayerSync handed to
+Penumbra. Every game path is looked up, not only the first one.
+
 Only files in the requested character's resolved mapping can be exported, only into an existing folder outside
 PlayerSync's cache, Penumbra's mod folder and the Dalamud plugin folders, and every copy is SHA-1 verified.
 

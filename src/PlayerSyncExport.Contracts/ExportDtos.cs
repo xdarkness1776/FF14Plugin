@@ -97,7 +97,20 @@ public sealed class ResourceDto
     /// <summary>Player, MinionOrMount, Pet or Companion.</summary>
     public string ObjectKind { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The game paths of the resource. For an available resource these are only the paths PlayerSync handed to
+    /// Penumbra; paths it dropped are listed in <see cref="ExcludedGamePaths"/> or <see cref="MissingGamePaths"/>.
+    /// </summary>
     public List<string> GamePaths { get; set; } = [];
+
+    /// <summary>Received game paths PlayerSync's file validation removed. Null when there are none.</summary>
+    public List<string>? ExcludedGamePaths { get; set; }
+
+    /// <summary>
+    /// Received game paths of an otherwise applied resource that are absent from PlayerSync's mapping. Null when
+    /// there are none or when nothing of the resource was applied (then <see cref="Availability"/> says so).
+    /// </summary>
+    public List<string>? MissingGamePaths { get; set; }
 
     /// <summary>The hash PlayerSync received for this resource (SHA-1 of the file content, uppercase hex).</summary>
     public string? Hash { get; set; }

@@ -34,6 +34,9 @@ public sealed class ExportSettings
     /// <summary>How long the export waits for PlayerSync to finish a running synchronization.</summary>
     public int SyncWaitSeconds { get; set; } = 120;
 
+    /// <summary>Folder with the user's original (numbered) .pmp packages. Only read, never written. Null when not set.</summary>
+    public string? LibraryFolder { get; set; }
+
     /// <summary>Only offer the context menu entry on characters PlayerSync currently handles.</summary>
     public bool OnlyShowForSyncedCharacters { get; set; } = true;
 }
