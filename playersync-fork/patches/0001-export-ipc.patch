@@ -1,9 +1,10 @@
 diff --git a/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs b/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs
 new file mode 100644
-index 0000000..b0fdc94
+index 0000000..804b8f4
 --- /dev/null
 +++ b/PlayerSync/Interop/Ipc/Export/ExportIpcProvider.cs
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,218 @@
++using Dalamud.Game.ClientState.Objects.SubKinds;
 +using Dalamud.Plugin;
 +using Dalamud.Plugin.Ipc;
 +using MareSynchronos.API.Data;
@@ -24,9 +25,11 @@ index 0000000..b0fdc94
 +/// already-resolved resource mapping of a character PlayerSync is syncing (directly, through a
 +/// syncshell or through ZoneSync) and copy those files into a folder the user chose.
 +///
-+/// It never downloads on its own, never pairs, and never writes to the cache or its index:
-+/// the mapping comes from <see cref="MareSynchronos.PlayerData.Handlers.PairHandler.ExportSnapshot"/>,
-+/// and a resync goes through the same "reapply last received data" path as the context menu.
++/// Reading a character (GetCharacterState) and exporting never download, never pair, never reapply and never write
++/// to the cache or its index: the mapping comes from <see cref="MareSynchronos.PlayerData.Handlers.PairHandler.ExportSnapshot"/>.
++/// Only the separate RequestReapply gate starts PlayerSync's "reapply last received data" path (the same as its
++/// context menu), which may download missing files; the exporter calls it only for its explicitly labelled action.
++/// Destinations are validated by <see cref="ExportJobRegistry"/> here, independently of the exporter's UI.
 +/// Request validation, waiting and copying live in <see cref="ExportJobRegistry"/> (shared with the exporter's tests).
 +/// </summary>
 +public sealed class ExportIpcProvider : IHostedService
@@ -43,7 +46,7 @@ index 0000000..b0fdc94
 +
 +    private ICallGateProvider<int>? _getApiVersion;
 +    private ICallGateProvider<uint, string>? _getCharacterState;
-+    private ICallGateProvider<uint, bool>? _requestResync;
++    private ICallGateProvider<uint, bool>? _requestReapply;
 +    private ICallGateProvider<string, string>? _startExport;
 +    private ICallGateProvider<string, string>? _getExportStatus;
 +    private ICallGateProvider<string, bool>? _cancelExport;
@@ -69,8 +72,8 @@ index 0000000..b0fdc94
 +        _getApiVersion.RegisterFunc(() => ExportIpc.ApiVersion);
 +        _getCharacterState = _pi.GetIpcProvider<uint, string>(ExportIpc.GetCharacterState);
 +        _getCharacterState.RegisterFunc(id => ExportJson.Serialize(Resolve(id).State));
-+        _requestResync = _pi.GetIpcProvider<uint, bool>(ExportIpc.RequestResync);
-+        _requestResync.RegisterFunc(RequestResync);
++        _requestReapply = _pi.GetIpcProvider<uint, bool>(ExportIpc.RequestReapply);
++        _requestReapply.RegisterFunc(RequestReapply);
 +        _startExport = _pi.GetIpcProvider<string, string>(ExportIpc.StartExport);
 +        _startExport.RegisterFunc(json => ExportJson.Serialize(StartExport(json)));
 +        _getExportStatus = _pi.GetIpcProvider<string, string>(ExportIpc.GetExportStatus);
@@ -85,7 +88,7 @@ index 0000000..b0fdc94
 +    {
 +        _getApiVersion?.UnregisterFunc();
 +        _getCharacterState?.UnregisterFunc();
-+        _requestResync?.UnregisterFunc();
++        _requestReapply?.UnregisterFunc();
 +        _startExport?.UnregisterFunc();
 +        _getExportStatus?.UnregisterFunc();
 +        _cancelExport?.UnregisterFunc();
@@ -109,16 +112,24 @@ index 0000000..b0fdc94
 +    {
 +        yield return _fileCacheManager.CacheFolder;
 +        yield return _ipcManager.Penumbra.ModDirectory;
-+        yield return _pi.ConfigDirectory.Parent?.FullName;
-+        yield return _pi.AssemblyLocation.Directory?.FullName;
++        foreach (var root in ExportPathPolicy.CommonForbiddenRoots(_pi.ConfigDirectory.Parent?.FullName, _pi.AssemblyLocation.Directory?.FullName,
++                     Path.GetDirectoryName(typeof(IDalamudPluginInterface).Assembly.Location)))
++            yield return root;
 +    }
 +
-+    private Pair? FindPair(uint entityId)
++    private (Pair? Pair, string? HomeWorld) FindPair(uint entityId)
 +    {
-+        if (entityId is 0 or uint.MaxValue) return null;
-+        // PlayerCharacterId dereferences the game object, so read it on the framework thread.
++        if (entityId is 0 or uint.MaxValue) return (null, null);
++        // PlayerCharacterId and the home world dereference the game object, so read them on the framework thread.
 +        return _dalamudUtil.RunOnFrameworkThread(() =>
-+            _pairManager.GetVisiblePairs().FirstOrDefault(p => p.PlayerCharacterId == entityId)).GetAwaiter().GetResult();
++        {
++            var pair = _pairManager.GetVisiblePairs().FirstOrDefault(p => p.PlayerCharacterId == entityId);
++            var address = pair?.ExportHandler?.PlayerCharacter ?? nint.Zero;
++            var world = address != nint.Zero && _dalamudUtil.CreateGameObject(address) is IPlayerCharacter pc
++                ? _dalamudUtil.GetWorldName((int)pc.HomeWorld.RowId)
++                : null;
++            return (pair, string.IsNullOrEmpty(world) ? null : world);
++        }).GetAwaiter().GetResult();
 +    }
 +
 +    private static IEnumerable<ReplacementInput> Inputs(CharacterData? data)
@@ -128,7 +139,13 @@ index 0000000..b0fdc94
 +    private CharacterResolution Resolve(uint entityId)
 +    {
 +        var files = new Dictionary<string, ResolvedFile>(StringComparer.OrdinalIgnoreCase);
-+        var state = new CharacterStateDto { ZoneSyncEnabled = _zoneSyncConfig.Current.EnableGroupZoneSyncJoining };
++        var state = new CharacterStateDto();
++        // The same rule GroupZoneSyncManager applies: an entry for your own character's name overrides the global setting.
++        var zoneSync = _zoneSyncConfig.Current;
++        var (effective, overridden) = ZoneSyncSettings.Effective(zoneSync.EnableGroupZoneSyncJoining, zoneSync.ZoneSyncEnabledPerCharacter, _dalamudUtil.PlayerName);
++        state.ZoneSyncJoiningGlobal = zoneSync.EnableGroupZoneSyncJoining;
++        state.ZoneSyncJoiningOverride = overridden;
++        state.ZoneSyncJoiningEffective = effective;
 +        try
 +        {
 +            if (!_apiController.IsConnected)
@@ -137,7 +154,7 @@ index 0000000..b0fdc94
 +                return new(state, files);
 +            }
 +
-+            var pair = FindPair(entityId);
++            var (pair, homeWorld) = FindPair(entityId);
 +            if (pair == null)
 +            {
 +                state.Lookup = CharacterLookup.NotSynced;
@@ -145,6 +162,7 @@ index 0000000..b0fdc94
 +            }
 +
 +            state.PlayerName = pair.PlayerName;
++            state.HomeWorld = homeWorld;
 +            state.IsDirectlyPaired = pair.IsDirectlyPaired;
 +            state.IsZoneSyncOnly = pair.IsZoneSyncOnlyPair;
 +            state.SharesZoneSyncGroup = pair.UserPair.Groups.Exists(g => g.StartsWith(Constants.GroupZoneSyncPrefix, StringComparison.Ordinal));
@@ -184,14 +202,14 @@ index 0000000..b0fdc94
 +        return new(state, files);
 +    }
 +
-+    private bool RequestResync(uint entityId)
++    private bool RequestReapply(uint entityId)
 +    {
 +        try
 +        {
-+            var pair = FindPair(entityId);
++            var (pair, _) = FindPair(entityId);
 +            if (pair == null || pair.IsPaused || pair.ExportHandler == null || pair.LastReceivedCharacterData == null) return false;
 +            if (pair.ExportHandler.IsSyncInProgress) return true;
-+            _logger.LogDebug("Export IPC: resync requested for {pair}", pair.PairUIDName);
++            _logger.LogDebug("Export IPC: reapply requested for {pair}", pair.PairUIDName);
 +            // Same path as the "Reapply last data" context menu entry: recomputes the mapping,
 +            // reuses cached files and only downloads what is missing.
 +            pair.ApplyLastReceivedData(forced: true);
@@ -199,7 +217,7 @@ index 0000000..b0fdc94
 +        }
 +        catch (Exception ex)
 +        {
-+            _logger.LogWarning(ex, "Export IPC: resync failed");
++            _logger.LogWarning(ex, "Export IPC: reapply failed");
 +            return false;
 +        }
 +    }

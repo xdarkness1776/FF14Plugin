@@ -2,6 +2,18 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.6.0.0: reliability and PlayerSync integration fixes. **Refresh and Scan are read-only and never cause downloads.**
+With the patched PlayerSync build, Scan used to run PlayerSync's "reapply last data", which can download missing files;
+that is now a separate **Reapply PlayerSync Data...** action that asks first and says it may download. The patched
+build's export IPC is now version 2 (the reapply gate has a new name); a version 1 build is shown as incompatible and
+not used, so update both together or use the official PlayerSync. Export folders are checked through symbolic links
+and junctions, and the game folder, Dalamud and every plugin folder are refused too; the PlayerSync IPC runs the same
+checks, and the folder is checked again before each file. An export now removes only its own temporary files, so two
+exports into one folder no longer delete each other's partial files, and a cleanup failure can no longer block later
+exports. Characters are identified by name and home world. The window shows whether the data is current, incomplete,
+stale or still loading, and your effective ZoneSync joining setting (the per-character setting wins). Not tested in
+game yet.
+
 0.5.0.0: capture reliability. The exporter now knows which files a character still uses. Files that were on the
 character earlier but are gone after an outfit change or new PlayerSync data are shown as "no longer in use". They
 start unselected, and are kept out of the library match and of every package and item mod. Animations, VFX and

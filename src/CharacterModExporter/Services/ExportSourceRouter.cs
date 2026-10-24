@@ -27,18 +27,28 @@ public sealed class ExportSourceRouter(IPlayerSyncExportApi exportIpc, IPlayerSy
         var ipc = exportIpc.Probe();
         if (ipc.Status == ProviderStatus.Available)
         {
+            _ignoredIpcVersion = null;
             _current = exportIpc;
             return ipc;
         }
 
+        // An export IPC of another version is never called: its gates may mean something else (v1's resync downloads).
+        _ignoredIpcVersion = ipc.Status == ProviderStatus.IncompatibleVersion ? ipc.Version : null;
         _current = penumbra;
         return penumbra.Probe();
     }
 
-    public string SourceLabel => Current.SourceLabel;
+    private int? _ignoredIpcVersion;
+
+    public string SourceLabel => Current.SourceLabel + (_ignoredIpcVersion is { } v && Current == penumbra
+        ? $" (a PlayerSync export IPC v{v} is loaded but not compatible with v{ExportIpc.ApiVersion}; it is not used)"
+        : string.Empty);
     public string UnavailableMessage => Current.UnavailableMessage;
     public CharacterStateDto GetCharacterState(uint entityId) => Current.GetCharacterState(entityId);
-    public bool RequestResync(uint entityId) => Current.RequestResync(entityId);
+    public bool SupportsRescan => Current.SupportsRescan;
+    public bool RequestRescan(uint entityId) => Current.RequestRescan(entityId);
+    public bool SupportsReapply => Current.SupportsReapply;
+    public bool RequestReapply(uint entityId) => Current.RequestReapply(entityId);
 
     public ExportStartResultDto StartExport(ExportRequestDto request)
     {

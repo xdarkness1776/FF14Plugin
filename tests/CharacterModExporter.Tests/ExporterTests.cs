@@ -249,13 +249,14 @@ public class ExportCoordinatorTests
         ps.Installed = false;
         var a = await coordinator.ExportAsync(new ExportTarget(42, "Alpha Beta", null), Settings.For(parent), [files[0].Hash], null, CancellationToken.None);
         ps.Installed = true;
-        ps.ProvidedVersion = 2;
+        ps.ProvidedVersion = 1; // the v1 IPC, whose RequestResync could download, is not used
+
         var b = await coordinator.ExportAsync(new ExportTarget(42, "Alpha Beta", null), Settings.For(parent), [files[0].Hash], null, CancellationToken.None);
 
         Assert.False(a.Success);
         Assert.Equal(ps.UnavailableMessage, a.Message);
         Assert.False(b.Success);
-        Assert.Contains("v2", b.Message);
+        Assert.Contains("v1", b.Message);
         Assert.False(Directory.Exists(Path.Combine(parent, ExportSettings.DefaultRootFolderName)));
     }
 
@@ -345,7 +346,7 @@ public class ExportSessionTests
         await session.RefreshAsync();
         Assert.False(session.Inventory.Assets[0].Selected);
         Assert.Equal(2, session.Inventory.Assets.Single(r => r.CacheHash == b.Hash).GamePaths.Count);
-        Assert.Equal(0, ps.ResyncRequests);
+        Assert.Equal(0, ps.ReapplyRequests);
     }
 
     [Fact]
@@ -373,7 +374,7 @@ public class ExportSessionTests
     }
 
     [Fact]
-    public async Task ResyncUsesPlayerSyncPipelineAndRetryExportsOnlyFailures()
+    public async Task ReapplyUsesPlayerSyncPipelineAndRetryExportsOnlyFailures()
     {
         using var dir = new TempDir();
         using var ps = new FakePlayerSync(dir);
@@ -381,7 +382,7 @@ public class ExportSessionTests
         var pair = ps.AddPair(7, "A B");
         pair.AddResolved(cached, "Player", "chara/a.tex");
         pair.AddMissing("CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD", "chara/b.tex");
-        ps.OnResync = p =>
+        ps.OnReapply = p =>
         {
             // PlayerSync's own pipeline fetches only the missing file; the cached one is reused.
             var downloaded = ps.SimulatePlayerSyncDownload("tex", "was missing");
@@ -395,7 +396,13 @@ public class ExportSessionTests
 
         await session.RefreshAsync();
         Assert.Single(session.Inventory.Unresolved);
-        await session.ResyncAsync();
+        await session.ScanAsync();
+        Assert.Single(session.Inventory.Unresolved);
+        Assert.Equal(0, ps.ReapplyRequests);
+        Assert.Equal(0, ps.DownloadRequests);
+
+        await session.ReapplyAsync();
+        Assert.Equal(1, ps.ReapplyRequests);
         Assert.Empty(session.Inventory.Unresolved);
         Assert.Equal(1, ps.DownloadRequests);
 

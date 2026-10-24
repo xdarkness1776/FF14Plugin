@@ -37,10 +37,15 @@ There is no IPC for a character's file list, its pairing state or its ZoneSync m
 ## Identity, addresses and stale data
 
 - A watched character is keyed by its **entity id**. Its address is only used to attribute Penumbra events, and the
-  name is checked on every read.
+  name and (since 0.6) the home world are checked on every read.
+- **New in 0.6: a capture that starts over gets a new tracker** (`CharacterWatchList`). Before, the tracker was reset
+  in place, so a Penumbra event that had already looked up the old address could still land in the fresh capture.
+  Now such an event goes to the discarded tracker. A change of address, name or home world, a despawn, a zone change
+  and closing the window all start over this way.
 - **Every frame** (0.4.1 checked once a second), the source checks that each watched character is still at the
   address it recorded. When the character despawned or moved, its tracker is reset and the old address stops
-  attributing events. So an object that takes over the address can be misattributed for at most one frame.
+  attributing events. So an object that takes over the address can be misattributed for at most one frame, and since
+  0.6 only into a capture that is then discarded.
 - **New in 0.5: zone and instance changes reset every tracker** (`IClientState.TerritoryChanged` and
   `InstanceChanged`). Every object despawns on a zone change, and the game reuses addresses for the next objects that
   load. The character is found again by entity id on the next read, and its files are recorded afresh.
@@ -51,7 +56,8 @@ There is no IPC for a character's file list, its pairing state or its ZoneSync m
   merged into another character's tracker. Events are matched against a concurrent address table. The tracker locks
   on every update.
 - An export session belongs to one target. It checks that the target is present before every operation, and refuses
-  when the provider reports another name for the entity. The copy step verifies every file's SHA-1 again, so a file
+  when the provider reports another name, or another home world when both sides know it (`TargetIdentity`; a
+  missing world is "world unconfirmed", not a match failure, and an export job records that in its notes). The copy step verifies every file's SHA-1 again, so a file
   that changed after it was listed fails rather than being exported under the wrong identity.
 
 ## Capture lifecycle
@@ -107,6 +113,13 @@ not influence any of this. It only sees the result: an address in `GetHandledAdd
 | Paused pair | Data removed | "not synced" | not run |
 
 The exporter never requests pairing, never joins or leaves a group and never changes a permission.
+
+**Effective joining setting (0.6).** `GroupZoneSyncManager` decides whether to join with
+`ZoneSyncEnabledPerCharacter.ContainsKey(PlayerName)`: an entry for **your own** current character's name overrides
+`EnableGroupZoneSyncJoining`. The export IPC used to report only the global setting; it now reports the global value,
+the override and the effective value (`ZoneSyncSettings.Effective`). The window shows "ZoneSync joining for you",
+which is your setting, not whether the other character is synced, nor whether its data is complete: those are the
+separate Sync link and Data lines. The stock Penumbra source cannot read PlayerSync's settings and shows "unknown".
 
 ## MCDF reading (hardened in 0.5)
 
@@ -196,5 +209,6 @@ have to apply them by hand. That is a possible follow-up, not something the stoc
 - Any file in an earlier tree counts as "no longer in use" when the latest tree lacks it. If Penumbra's tree ever
   missed a file for one read, that file would be marked no longer in use until the next tree or the next time it
   loads. It would still be listed, just unselected.
-- Event attribution is by address and can be wrong for up to one frame after a despawn.
+- Event attribution is by address and can be wrong for up to one frame after a despawn; since 0.6 such events land
+  only in a capture that is discarded.
 - None of this has run in game.

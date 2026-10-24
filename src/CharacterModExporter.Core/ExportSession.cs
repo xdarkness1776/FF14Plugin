@@ -74,37 +74,82 @@ public sealed class ExportSession : IDisposable
     public IReadOnlyList<ExportFileResultDto> FailedFiles => LastOutcome?.Files
         .Where(f => f.Outcome is not (FileExportOutcome.Copied or FileExportOutcome.AlreadyPresentIdentical)).ToList() ?? [];
 
-    /// <summary>Re-reads the character's current mapping from PlayerSync. Does not ask PlayerSync to download anything.</summary>
-    public Task RefreshAsync(bool verifyExported = false) => Run("Reading character resources from PlayerSync.", t => RefreshCoreAsync(verifyExported, t));
+    /// <summary>
+    /// Re-reads what the source knows about the character. Read-only: no synchronization, download or reapplication
+    /// is started, and a stale mapping is reported as stale (<see cref="Freshness"/>), not refreshed.
+    /// </summary>
+    public Task RefreshAsync(bool verifyExported = false) => Run("Reading the character's resources.", t => RefreshCoreAsync(verifyExported, t));
+
+    public bool SupportsRescan => _api.SupportsRescan;
+    public bool SupportsReapply => _api.SupportsReapply;
+
+    /// <summary>How current <see cref="State"/> is.</summary>
+    public MappingFreshness Freshness => Core.Freshness.Of(State);
 
     /// <summary>
-    /// Asks PlayerSync to re-run its normal pipeline for this character (reapply last received data):
-    /// it recomputes the mapping, reuses cached files and downloads only what is missing. Then refreshes.
+    /// Makes the game load the character's files again (Penumbra redraw) and lists them once loading settles. Local
+    /// only: PlayerSync is not asked to synchronize, download or reapply anything. With a source that already reports
+    /// the full mapping (the export IPC) this is the same as a refresh.
     /// </summary>
-    public Task ResyncAsync() => Run("Asking PlayerSync to resynchronize the character.", async t =>
+    public Task ScanAsync() => Run("Scanning the character's resources.", async t =>
     {
         if (!await CheckReadyAsync().ConfigureAwait(false)) return;
-        if (!_api.RequestResync(Target.EntityId))
+        if (!_api.SupportsRescan)
         {
-            LastError = "PlayerSync did not accept the resync request (character not synced, paused, or no data received yet).";
             await RefreshCoreAsync(false, t).ConfigureAwait(false);
             return;
         }
 
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Max(5, _settings().SyncWaitSeconds));
+        if (!_api.RequestRescan(Target.EntityId))
+        {
+            LastError = "The character could not be redrawn (not synced by PlayerSync, or no longer nearby).";
+            await RefreshCoreAsync(false, t).ConfigureAwait(false);
+            return;
+        }
+
+        await WaitWhileLoadingAsync("Waiting for the game to load the character's files", t).ConfigureAwait(false);
+        await RefreshCoreAsync(false, t).ConfigureAwait(false);
+    });
+
+    /// <summary>
+    /// Explicit user action: asks PlayerSync to reapply the data it last received for this character, as its own
+    /// "reapply" menu entry does. PlayerSync reuses cached files but <b>downloads missing ones</b>. Never called by a
+    /// refresh, scan or export.
+    /// </summary>
+    public Task ReapplyAsync() => Run("Asking PlayerSync to reapply the character's data.", async t =>
+    {
+        if (!await CheckReadyAsync().ConfigureAwait(false)) return;
+        if (!_api.SupportsReapply)
+        {
+            LastError = "This source cannot ask PlayerSync to reapply data. Use PlayerSync's own menu for that.";
+            return;
+        }
+
+        if (!_api.RequestReapply(Target.EntityId))
+        {
+            LastError = "PlayerSync did not accept the request (character not synced, paused, or no data received yet).";
+            await RefreshCoreAsync(false, t).ConfigureAwait(false);
+            return;
+        }
+
         // Give PlayerSync a moment to start its pipeline before we look at the state.
         await _delay(TimeSpan.FromMilliseconds(500), t).ConfigureAwait(false);
+        await WaitWhileLoadingAsync("PlayerSync is applying", t).ConfigureAwait(false);
+        await RefreshCoreAsync(false, t).ConfigureAwait(false);
+    });
+
+    private async Task WaitWhileLoadingAsync(string what, CancellationToken t)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Max(5, _settings().SyncWaitSeconds));
         while (DateTimeOffset.UtcNow < deadline)
         {
             t.ThrowIfCancellationRequested();
             var state = _api.GetCharacterState(Target.EntityId);
-            Operation = $"PlayerSync is synchronizing: {state.SyncState}.";
-            if (state.SyncState is not SyncState.InProgress) break;
+            if (state.SyncState is not SyncState.InProgress) return;
+            Operation = what + ".";
             await _delay(TimeSpan.FromSeconds(1), t).ConfigureAwait(false);
         }
-
-        await RefreshCoreAsync(false, t).ConfigureAwait(false);
-    });
+    }
 
     public Task ExportSelectedAsync() => Run("Exporting.", async t =>
     {
@@ -270,9 +315,10 @@ public sealed class ExportSession : IDisposable
     {
         if (!await CheckReadyAsync().ConfigureAwait(false)) return;
         var state = _api.GetCharacterState(Target.EntityId);
-        if (state.Lookup == CharacterLookup.Found && !string.Equals(state.PlayerName, Target.Name, StringComparison.Ordinal))
+        if (state.Lookup == CharacterLookup.Found && TargetIdentity.Compare(Target, state.PlayerName, state.HomeWorld) == TargetIdentity.Result.Different)
         {
-            LastError = "PlayerSync reports a different character for this game object. Reopen the window from the context menu.";
+            // Never show (or later export) another character's files under this target.
+            LastError = "The source reports a different character for this game object. Reopen the window from the context menu.";
             State = null;
             Inventory = new AssetInventory();
             return;

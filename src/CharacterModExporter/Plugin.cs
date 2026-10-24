@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using CharacterModExporter.Core;
 using CharacterModExporter.Core.Library;
 using CharacterModExporter.Services;
@@ -9,6 +8,7 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using PlayerSyncExport.Contracts;
 
 namespace CharacterModExporter;
 
@@ -72,22 +72,18 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += _settingsWindow.Toggle;
     }
 
+    /// <summary>
+    /// Folders an export may never be written into or through: the game installation, Dalamud and every plugin's
+    /// configuration and installation, Penumbra's mod directory and PlayerSync's cache. The PlayerSync export IPC
+    /// checks the same common roots itself, so a direct IPC call cannot bypass them.
+    /// </summary>
     private IEnumerable<string?> ForbiddenRoots()
     {
-        // The game installation (ffxiv_dx11.exe lives in <game>/game).
-        string? gameDir = null;
-        try
-        {
-            gameDir = Path.GetDirectoryName(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName));
-        }
-        catch (Exception)
-        {
-            // Not fatal; the other roots are still checked.
-        }
+        foreach (var root in ExportPathPolicy.CommonForbiddenRoots(PluginInterface.ConfigDirectory.Parent?.FullName,
+                     PluginInterface.AssemblyLocation.Directory?.FullName,
+                     Path.GetDirectoryName(typeof(IDalamudPluginInterface).Assembly.Location)))
+            yield return root;
 
-        yield return gameDir;
-        yield return PluginInterface.ConfigDirectory.Parent?.FullName;
-        yield return PluginInterface.AssemblyLocation.Directory?.Parent?.FullName;
         string? penumbra = null;
         try
         {

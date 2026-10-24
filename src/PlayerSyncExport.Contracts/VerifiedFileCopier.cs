@@ -19,12 +19,32 @@ public static class VerifiedFileCopier
     /// </summary>
     /// <param name="expectedSha1">When given, the copy is accepted only if the SHA-1 of the data matches.</param>
     /// <param name="expectedSha256">When given, the copy is accepted only if the SHA-256 of the data matches.</param>
+    /// <param name="ledger">Records the temporary file while it exists, so its owner can remove it if this method is interrupted.</param>
     public static async Task<CopyResult> CopyAsync(string sourcePath, string destinationDirectory, string fileName,
-        string? expectedSha1, IProgress<long>? progress, CancellationToken token, string? expectedSha256 = null)
+        string? expectedSha1, IProgress<long>? progress, CancellationToken token, string? expectedSha256 = null, TempFileLedger? ledger = null)
     {
         var finalPath = ExportPathPolicy.CombineWithin(destinationDirectory, fileName);
         var tempPath = finalPath + "." + Guid.NewGuid().ToString("N")[..8] + TempSuffix;
+        ledger?.Add(tempPath);
+        Func<string, bool> tryDelete = ledger != null ? ledger.TryDelete : TryDelete;
+        try
+        {
+            return await CopyCoreAsync(sourcePath, finalPath, tempPath, fileName, expectedSha1, progress, token, expectedSha256, tryDelete)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            // Every path below either moved the file to its final name or tried to delete it. A file still here is ours;
+            // if it cannot be removed now it stays in the ledger for the job's final cleanup. Never throws, so a cleanup
+            // problem never replaces the copy's own result.
+            if (!File.Exists(tempPath)) ledger?.Remove(tempPath);
+            else tryDelete(tempPath);
+        }
+    }
 
+    private static async Task<CopyResult> CopyCoreAsync(string sourcePath, string finalPath, string tempPath, string fileName,
+        string? expectedSha1, IProgress<long>? progress, CancellationToken token, string? expectedSha256, Func<string, bool> tryDelete)
+    {
         if (!File.Exists(sourcePath))
             return new(FileExportOutcome.SourceMissing, 0, false, null, "The source file no longer exists.");
 
@@ -61,12 +81,12 @@ public static class VerifiedFileCopier
         }
         catch (OperationCanceledException)
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             return new(FileExportOutcome.Cancelled, length, false, null, "Cancelled.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             var outcome = File.Exists(sourcePath) ? FileExportOutcome.Failed : FileExportOutcome.SourceMissing;
             return new(outcome, length, false, null, ex.Message);
         }
@@ -74,14 +94,14 @@ public static class VerifiedFileCopier
         var verified = expectedSha1 != null && string.Equals(sha1Hex, expectedSha1, StringComparison.OrdinalIgnoreCase);
         if (expectedSha1 != null && !verified)
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             return new(FileExportOutcome.IntegrityMismatch, length, false, sha256Hex,
                 $"SHA-1 of the copied data is {sha1Hex}, expected {expectedSha1.ToUpperInvariant()}. The cache file may be incomplete or was changed.");
         }
 
         if (expectedSha256 != null && !string.Equals(sha256Hex, expectedSha256, StringComparison.OrdinalIgnoreCase))
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             return new(FileExportOutcome.IntegrityMismatch, length, verified, sha256Hex,
                 $"SHA-256 of the copied data is {sha256Hex}, expected {expectedSha256.ToUpperInvariant()}. The file changed since it was indexed.");
         }
@@ -91,7 +111,7 @@ public static class VerifiedFileCopier
             if (File.Exists(finalPath))
             {
                 var existing = await HashFileAsync(finalPath, HashAlgorithmName.SHA256, token).ConfigureAwait(false);
-                TryDelete(tempPath);
+                tryDelete(tempPath);
                 return string.Equals(existing, sha256Hex, StringComparison.OrdinalIgnoreCase)
                     ? new(FileExportOutcome.AlreadyPresentIdentical, length, verified, sha256Hex, null)
                     : new(FileExportOutcome.DestinationConflict, length, verified, sha256Hex,
@@ -103,12 +123,12 @@ public static class VerifiedFileCopier
         }
         catch (OperationCanceledException)
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             return new(FileExportOutcome.Cancelled, length, false, null, "Cancelled.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            TryDelete(tempPath);
+            tryDelete(tempPath);
             // A concurrent writer may have created the final file between the check and the move.
             return File.Exists(finalPath)
                 ? new(FileExportOutcome.DestinationConflict, length, verified, sha256Hex, ex.Message)
@@ -128,18 +148,6 @@ public static class VerifiedFileCopier
         return Convert.ToHexString(hash);
     }
 
-    /// <summary>Deletes temporary files this copier left behind (only files ending in <see cref="TempSuffix"/>).</summary>
-    public static int CleanupTempFiles(string directory)
-    {
-        if (!Directory.Exists(directory)) return 0;
-        var removed = 0;
-        foreach (var file in Directory.EnumerateFiles(directory, "*" + TempSuffix, SearchOption.TopDirectoryOnly))
-        {
-            if (TryDelete(file)) removed++;
-        }
-        return removed;
-    }
-
     private static bool TryDelete(string path)
     {
         try
@@ -152,5 +160,74 @@ public static class VerifiedFileCopier
         {
             return false;
         }
+    }
+}
+
+/// <summary>
+/// The temporary files one export job created and has not finished with yet. Cleanup deletes exactly these, never
+/// other files that happen to have the same suffix (another job's, or a user's). Thread-safe.
+/// </summary>
+public sealed class TempFileLedger
+{
+    private readonly object _lock = new();
+    private readonly HashSet<string> _paths = new(StringComparer.Ordinal);
+    private readonly Action<string> _delete;
+
+    /// <param name="delete">Deletes one file (tests replace it); defaults to <see cref="File.Delete"/>.</param>
+    public TempFileLedger(Action<string>? delete = null) => _delete = delete ?? File.Delete;
+
+    public void Add(string path)
+    {
+        lock (_lock) _paths.Add(path);
+    }
+
+    public void Remove(string path)
+    {
+        lock (_lock) _paths.Remove(path);
+    }
+
+    public IReadOnlyList<string> Pending
+    {
+        get
+        {
+            lock (_lock) return [.. _paths];
+        }
+    }
+
+    /// <summary>Deletes one recorded file if it still exists. On success it is no longer recorded; never throws.</summary>
+    public bool TryDelete(string path) => TryDelete(path, out _);
+
+    private bool TryDelete(string path, out string? error)
+    {
+        error = null;
+        try
+        {
+            if (!path.EndsWith(VerifiedFileCopier.TempSuffix, StringComparison.Ordinal))
+            {
+                error = "Not a temporary export file; left untouched.";
+                return false;
+            }
+
+            if (File.Exists(path)) _delete(path);
+            Remove(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Deletes every recorded file that still exists, and only those. Returns the ones that could not be deleted, with
+    /// the reason; they stay recorded. Never throws.
+    /// </summary>
+    public List<(string Path, string Error)> DeleteAll()
+    {
+        var failed = new List<(string, string)>();
+        foreach (var path in Pending)
+            if (!TryDelete(path, out var error)) failed.Add((path, error ?? "Unknown error."));
+        return failed;
     }
 }

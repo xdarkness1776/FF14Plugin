@@ -88,7 +88,28 @@ public sealed class CharacterStateDto
     /// <summary>True when at least one of the shared groups is a ZoneSync group.</summary>
     public bool SharesZoneSyncGroup { get; set; }
 
-    public bool ZoneSyncEnabled { get; set; }
+    /// <summary>
+    /// PlayerSync's global "join ZoneSync" setting (<c>EnableGroupZoneSyncJoining</c>). Null when unknown. This is the
+    /// default only: a per-character override can change it (see <see cref="ZoneSyncJoiningEffective"/>).
+    /// </summary>
+    public bool? ZoneSyncJoiningGlobal { get; set; }
+
+    /// <summary>
+    /// PlayerSync's override of that setting for the character you are logged in as (<c>ZoneSyncEnabledPerCharacter</c>,
+    /// keyed by your own character's name). Null when there is none or it is unknown.
+    /// </summary>
+    public bool? ZoneSyncJoiningOverride { get; set; }
+
+    /// <summary>
+    /// Whether PlayerSync joins ZoneSync groups for you now: the override when there is one, otherwise the global
+    /// setting (<see cref="ZoneSyncSettings.Effective"/>). It says nothing about this character: whether you share a
+    /// ZoneSync group with it is <see cref="SharesZoneSyncGroup"/>, and whether its data is applied is
+    /// <see cref="SyncState"/>.
+    /// </summary>
+    public bool? ZoneSyncJoiningEffective { get; set; }
+
+    /// <summary>The character's home world as the source read it from the game object; null when it could not.</summary>
+    public string? HomeWorld { get; set; }
 
     /// <summary>
     /// False when the source cannot tell how the character is linked (direct pair, syncshell or ZoneSync), so the
@@ -174,6 +195,12 @@ public sealed class ExportRequestDto
     /// <summary>Cache hashes (see <see cref="ResourceDto.CacheHash"/>) to export.</summary>
     public List<string> CacheHashes { get; set; } = [];
 
+    /// <summary>
+    /// The home world the exporter captured with the name. When both sides know it, a different world fails the
+    /// job; when the provider cannot read it, the job notes that the world was not confirmed.
+    /// </summary>
+    public string? ExpectedHomeWorld { get; set; }
+
     /// <summary>How long to wait for a running synchronization before giving up.</summary>
     public int SyncWaitSeconds { get; set; } = 120;
 }
@@ -242,6 +269,22 @@ public sealed class ExportJobStatusDto
     [JsonIgnore]
     public bool IsFinished => Phase is ExportJobPhase.Completed or ExportJobPhase.CompletedWithIssues
         or ExportJobPhase.Failed or ExportJobPhase.Cancelled;
+}
+
+/// <summary>How PlayerSync decides whether it joins ZoneSync groups for the logged-in character.</summary>
+public static class ZoneSyncSettings
+{
+    /// <summary>
+    /// Mirrors <c>GroupZoneSyncManager.ScheduleGroupZoneSync</c> (PlayerSync 1.15.5.9): the per-character entry for the
+    /// logged-in character's name wins when there is one, otherwise the global setting applies.
+    /// </summary>
+    /// <returns>The effective setting and the override that decided it (null when the global setting applied).</returns>
+    public static (bool Effective, bool? Override) Effective(bool global, IReadOnlyDictionary<string, bool>? perCharacter, string? localPlayerName)
+    {
+        if (perCharacter != null && !string.IsNullOrEmpty(localPlayerName) && perCharacter.TryGetValue(localPlayerName, out var value))
+            return (value, value);
+        return (global, null);
+    }
 }
 
 public static class ExportJson

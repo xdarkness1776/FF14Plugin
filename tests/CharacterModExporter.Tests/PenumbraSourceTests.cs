@@ -45,7 +45,11 @@ public sealed class FakePenumbraSource : IPlayerSyncExportApi, IDisposable
 
     public CharacterStateDto GetCharacterState(uint entityId) => Resolve(entityId).State;
 
-    public bool RequestResync(uint entityId)
+    public bool SupportsRescan => true;
+    public bool SupportsReapply => false;
+    public bool RequestReapply(uint entityId) => false;
+
+    public bool RequestRescan(uint entityId)
     {
         Redraws++;
         Tracker.MarkChanging();
@@ -285,7 +289,7 @@ public class PenumbraResolutionTests
         src.Settle();
         Assert.Equal(SyncState.Complete, src.Resolve(1).State.SyncState);
 
-        src.RequestResync(1);
+        src.RequestRescan(1);
         Assert.Equal(SyncState.InProgress, src.Resolve(1).State.SyncState);
         Assert.Equal(1, src.Redraws);
     }

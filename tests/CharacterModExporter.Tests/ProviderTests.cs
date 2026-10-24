@@ -283,7 +283,8 @@ public class ExportJobRegistryTests
         var status = await RunToEnd(ps, Request(1, "A B", dest, file.Hash));
 
         Assert.Equal(ExportJobPhase.Failed, status.Phase);
-        Assert.Contains("did not finish", status.Message);
+        Assert.Contains("newer data", status.Message);
+        Assert.Contains("may download", status.Message);
         Assert.Empty(Directory.GetFiles(dest));
     }
 
@@ -358,6 +359,6 @@ public class ExportJobRegistryTests
         await RunToEnd(ps, Request(1, "A B", dir.Sub("out"), file.Hash));
 
         Assert.Equal(0, ps.DownloadRequests);
-        Assert.Equal(0, ps.ResyncRequests);
+        Assert.Equal(0, ps.ReapplyRequests);
     }
 }
