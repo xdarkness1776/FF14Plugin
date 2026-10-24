@@ -23,10 +23,12 @@ page). CI runs keep it as the `packages` artifact.
 
 1. Have ZoneSync (or a syncshell / pair) active in PlayerSync, and let the other character load.
 2. Right-click the character → **Export Character Mods**.
-3. The window lists the files PlayerSync applied to that character, as Penumbra reports them:
+3. The window has three tabs: **Character Files**, **Original Packages** and **Export Report**. Character Files
+   lists the files PlayerSync applied to that character, as Penumbra reports them. The view menu next to the filter
+   shows all files, only those ready to export, the selected ones, the missing or excluded ones, or the file swaps:
    * Only files the game has loaded are listed. Animations, VFX and sounds are added once they play while the window
-     is open (press **Refresh Character Resources** to update the list).
-   * **Refresh Character Resources** and **Scan Character Resources** are read-only. Scan redraws the character
+     is open (press **Refresh** to update the list).
+   * **Refresh** and **Scan (Redraw)** are read-only. Scan redraws the character
      through Penumbra so the game loads its gear again (stock PlayerSync), or reads the full mapping again (patched
      build). Neither calls PlayerSync, so neither downloads anything; files PlayerSync has not downloaded yet are
      listed as missing.
@@ -44,7 +46,7 @@ page). CI runs keep it as the `packages` artifact.
      notes say how many).
 4. Pick files (all available files are preselected) → **Export Selected**. The window waits until no new files have
    appeared for about 5 seconds, copies and verifies the files, and writes `Manifest.json` and `README.txt`.
-5. **Open Character Folder** shows the result:
+5. **Open** next to the export folder line shows the result:
 
 ```
 <parent>\FFXIV Character Mod Exports\<Name>_<World>\
@@ -90,7 +92,7 @@ page). CI runs keep it as the `packages` artifact.
    installed or enabled automatically. Because only loaded files are listed, a package may miss emotes or effects
    that never played; meta manipulations are never included.
 
-8. **Original Packages** (button in the export window): if you keep your original mods as `.pmp` files, choose that
+8. **Original Packages** (tab in the export window): if you keep your original mods as `.pmp` files, choose that
    folder under Settings → Original Package Library and index it once. Then **Match Live Character** lists the
    packages the character's files come from (Exact, Strong, Partial, Ambiguous), and **Export Selected Originals**
    copies them unchanged into `Original packages\` next to the other exports, with `OriginalPackages.json`.

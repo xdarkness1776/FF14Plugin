@@ -5,6 +5,7 @@ using CharacterModExporter.Core.Library;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Colors;
 using Dalamud.Interface.ImGuiFileDialog;
+using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using PlayerSyncExport.Contracts;
@@ -18,8 +19,7 @@ public sealed class ExportWindow : Window, IDisposable
     private readonly Action _openSettings;
     private readonly Action<string> _openFolder;
     private string _filter = string.Empty;
-    private bool _showReport;
-    private bool _showOriginals;
+    private int _view;
     private bool _viewSnapshot;
     private string _packageFilter = string.Empty;
     private int _statusFilter;
@@ -56,11 +56,32 @@ public sealed class ExportWindow : Window, IDisposable
     {
         DrawHeader();
         ImGui.Separator();
-        DrawControls();
-        ImGui.Separator();
-        if (_showOriginals) DrawOriginals();
-        else if (_showReport) DrawReport();
-        else DrawInventory();
+        using (var tabs = ImRaii.TabBar("##cmx-tabs"))
+        {
+            if (tabs)
+            {
+                using (var tab = ImRaii.TabItem("Character Files"))
+                {
+                    if (tab)
+                    {
+                        DrawControls();
+                        DrawInventory();
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem("Original Packages"))
+                {
+                    if (tab) DrawOriginals();
+                }
+
+                Tooltip("Find the original .pmp files in your own library that this character's files come from, and copy them unchanged.");
+                using (var tab = ImRaii.TabItem("Export Report"))
+                {
+                    if (tab) DrawReport();
+                }
+            }
+        }
+
         _dialog.Draw();
     }
 
@@ -68,7 +89,8 @@ public sealed class ExportWindow : Window, IDisposable
     {
         var s = _session;
         var state = s.State;
-        ImGui.TextUnformatted($"Character: {s.Target.Name}    World: {s.Target.World ?? "unknown"}");
+        ImGui.TextUnformatted($"{s.Target.Name} ({s.Target.World ?? "unknown world"})");
+        ImGui.SameLine();
 
         var provider = s.Provider switch
         {
@@ -76,7 +98,7 @@ public sealed class ExportWindow : Window, IDisposable
             ProviderStatus.IncompatibleVersion => ($"PlayerSync export IPC v{s.ProviderVersion} (incompatible, need v{ExportIpc.ApiVersion})", ImGuiColors.DalamudRed),
             _ => (s.UnavailableMessage, ImGuiColors.DalamudRed),
         };
-        ImGui.TextColored(provider.Item2, "Source: " + provider.Item1);
+        ImGui.TextColored(provider.Item2, "  Source: " + provider.Item1);
 
         if (state != null)
         {
@@ -102,6 +124,7 @@ public sealed class ExportWindow : Window, IDisposable
                 MappingFreshness.Incomplete or MappingFreshness.LoadedOnly or MappingFreshness.Loading => ImGuiColors.DalamudYellow,
                 _ => ImGuiColors.DalamudRed,
             }, "Data: " + Freshness.Describe(freshness));
+            ImGui.SameLine();
             var syncColor = state.SyncState switch
             {
                 SyncState.Complete => ImGuiColors.HealerGreen,
@@ -109,12 +132,18 @@ public sealed class ExportWindow : Window, IDisposable
                 SyncState.InProgress => ImGuiColors.DalamudOrange,
                 _ => ImGuiColors.DalamudRed,
             };
-            ImGui.TextColored(syncColor, "Synchronization: " + (state.LinkDetailsKnown ? DescribeSync(state.SyncState) : DescribeLoaded(state.SyncState)));
-            foreach (var note in state.Notes) ImGui.TextColored(ImGuiColors.DalamudGrey, note);
+            ImGui.TextColored(syncColor, "  Synchronization: " + (state.LinkDetailsKnown ? DescribeSync(state.SyncState) : DescribeLoaded(state.SyncState)));
+            if (state.Notes.Count > 0 && ImGui.CollapsingHeader($"Source notes ({state.Notes.Count})##cmx-notes"))
+            {
+                foreach (var note in state.Notes) ImGui.TextColored(ImGuiColors.DalamudGrey, note);
+            }
         }
 
         if (!s.TargetPresent) ImGui.TextColored(ImGuiColors.DalamudRed, $"{s.Target.Name} is no longer nearby.");
-        ImGui.TextUnformatted("Export folder: " + (s.LastOutcome?.Layout?.SessionFolder ?? s.CharacterFolder));
+        var characterFolder = s.LastOutcome?.Layout?.SessionFolder ?? s.CharacterFolder;
+        ImGui.TextUnformatted("Export folder: " + characterFolder);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Open##cmx-charfolder")) _openFolder(characterFolder);
 
         if (s.Operation != null)
         {
@@ -164,12 +193,13 @@ public sealed class ExportWindow : Window, IDisposable
     {
         var s = _session;
         var busy = s.IsBusy;
+        Label("Read");
         using (ImRaii.Disabled(busy))
         {
-            if (ImGui.Button("Refresh Character Resources")) _ = s.RefreshAsync();
+            if (ImGui.Button("Refresh")) _ = s.RefreshAsync();
             Tooltip("Reads what is known about the character's files again. Read-only: PlayerSync is not asked to sync, download or reapply anything.");
             ImGui.SameLine();
-            if (ImGui.Button("Scan Character Resources")) _ = s.ScanAsync();
+            if (ImGui.Button("Scan (Redraw)")) _ = s.ScanAsync();
             Tooltip(s.SupportsRescan
                 ? "Redraws the character in the game so all of its files load again, then lists them. Local only: PlayerSync is not asked to sync, download or reapply anything."
                 : "This source already reports PlayerSync's full mapping, so a scan is the same as a refresh. Nothing is downloaded.");
@@ -192,54 +222,51 @@ public sealed class ExportWindow : Window, IDisposable
                     ImGui.EndPopup();
                 }
             }
+
             ImGui.SameLine();
+            if (ImGui.Button("Verify Exported Files")) _ = s.RefreshAsync(verifyExported: true);
+            Tooltip("Hashes files already in the export folder and compares them with their SHA-1 identifiers. Results are cached until a file changes.");
+        }
+
+        ImGui.SameLine();
+        ImGui.TextDisabled("|");
+        ImGui.SameLine();
+        if (ImGui.Button("Open Export Folder")) _openFolder(s.ExportRoot);
+        ImGui.SameLine();
+        if (ImGui.Button("Settings")) _openSettings();
+
+        Label("Export");
+        using (ImRaii.Disabled(busy))
+        {
             if (ImGui.Button("Select All Available")) s.SelectAllAvailable();
             ImGui.SameLine();
             using (ImRaii.Disabled(!s.CanExport))
             {
                 if (ImGui.Button("Export Selected")) _ = s.ExportSelectedAsync();
             }
+
+            Tooltip("Copies the selected files into the export folder, checks each copy against its hash, and builds the packages chosen in Settings from the checked copies only.");
             ImGui.SameLine();
             using (ImRaii.Disabled(s.FailedFiles.Count == 0))
             {
-                if (ImGui.Button($"Retry Failed Exports ({s.FailedFiles.Count})")) _ = s.RetryFailedAsync();
+                if (ImGui.Button($"Retry Failed ({s.FailedFiles.Count})")) _ = s.RetryFailedAsync();
             }
         }
 
         ImGui.SameLine();
         using (ImRaii.Disabled(!busy))
         {
-            if (ImGui.Button("Cancel Export")) s.Cancel();
+            if (ImGui.Button("Cancel")) s.Cancel();
         }
-
-        if (ImGui.Button("Open Export Folder")) _openFolder(s.ExportRoot);
-        ImGui.SameLine();
-        if (ImGui.Button("Open Character Folder")) _openFolder(s.LastOutcome?.Layout?.SessionFolder ?? s.CharacterFolder);
-        ImGui.SameLine();
-        if (ImGui.Button(_showReport ? "Show Resources" : "View Export Report"))
-        {
-            _showReport = !_showReport;
-            _showOriginals = false;
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button(_showOriginals ? "Show Resources##orig" : "Original Packages"))
-        {
-            _showOriginals = !_showOriginals;
-            _showReport = false;
-        }
-
-        Tooltip("Find the original .pmp files in your own library that this character's files come from, and copy them unchanged.");
-        ImGui.SameLine();
-        using (ImRaii.Disabled(busy))
-        {
-            if (ImGui.Button("Verify Exported Files")) _ = s.RefreshAsync(verifyExported: true);
-        }
-        Tooltip("Hashes files already in the export folder and compares them with their SHA-1 identifiers. Results are cached until a file changes.");
-        ImGui.SameLine();
-        if (ImGui.Button("Settings")) _openSettings();
 
         DrawSummary();
+    }
+
+    private static void Label(string text)
+    {
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextDisabled(text);
+        ImGui.SameLine(64 * ImGuiHelpers.GlobalScale);
     }
 
     private void DrawSummary()
@@ -249,10 +276,26 @@ public sealed class ExportWindow : Window, IDisposable
         var available = inv.Assets.Count(a => a.CanExport);
         var already = inv.Assets.Count(a => a.Selected && a.ExportedState is ExportedFileState.PresentVerified or ExportedFileState.PresentUnverified);
         var pending = _session.State?.SyncState is SyncState.InProgress or SyncState.Stale;
-        ImGui.TextUnformatted($"Selected {selected} of {available} available files ({ExportCoordinator.FormatBytes(inv.KnownSelectedBytes)}), " +
-            $"{already} already in the export folder, {inv.Unresolved.Count} missing/unresolved, {inv.FileSwaps.Count} file swaps" +
-            (pending ? ", synchronization pending" : string.Empty) +
-            (_session.State?.HasManipulations == true ? ", meta manipulations not exportable" : string.Empty) + ".");
+        ImGui.TextUnformatted($"{selected} of {available} files selected ({ExportCoordinator.FormatBytes(inv.KnownSelectedBytes)}), {already} already exported.");
+        if (inv.Unresolved.Count > 0)
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(ImGuiColors.DalamudYellow, $"{inv.Unresolved.Count} missing or excluded.");
+        }
+
+        ImGui.SameLine();
+        ImGui.TextUnformatted($"{inv.FileSwaps.Count} file swap(s).");
+        if (pending)
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(ImGuiColors.DalamudOrange, "Synchronization pending.");
+        }
+
+        if (_session.State?.HasManipulations == true)
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(ImGuiColors.DalamudGrey, "Meta manipulations are not exportable.");
+        }
     }
 
     private void DrawInventory()
@@ -260,6 +303,9 @@ public sealed class ExportWindow : Window, IDisposable
         var inv = _session.Inventory;
         ImGui.SetNextItemWidth(260);
         ImGui.InputTextWithHint("##filter", "Filter by game path or hash", ref _filter, 256);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(180);
+        ImGui.Combo("##view", ref _view, ViewNames, ViewNames.Length);
 
         const ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders | ImGuiTableFlags.ScrollY | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingFixedFit;
         using var table = ImRaii.Table("##assets", 9, flags, new Vector2(-1, -1));
@@ -279,6 +325,7 @@ public sealed class ExportWindow : Window, IDisposable
         var results = _session.LastOutcome?.Files.ToDictionary(f => f.CacheHash, StringComparer.OrdinalIgnoreCase);
         foreach (var row in inv.Assets)
         {
+            if (_view is 3 or 4 || (_view == 1 && !row.CanExport) || (_view == 2 && !row.Selected)) continue;
             if (!Matches(row.GamePaths, row.CacheHash)) continue;
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -319,12 +366,12 @@ public sealed class ExportWindow : Window, IDisposable
             if (row.Activity == ResourceActivity.NoLongerActive) notes.Add("no longer in use");
             else if (row.Activity == ResourceActivity.ObservedLoaded) notes.Add("seen loading");
             if (row.ObjectKinds.Count > 0 && !(row.ObjectKinds.Count == 1 && row.ObjectKinds.Contains("Player"))) notes.Add(string.Join("/", row.ObjectKinds));
-            notes.Add("individual resource");
             ImGui.TextUnformatted(string.Join(", ", notes));
         }
 
         foreach (var row in inv.Unresolved)
         {
+            if (_view is not (0 or 3)) continue;
             if (!Matches(row.GamePaths, row.Hash)) continue;
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -339,11 +386,17 @@ public sealed class ExportWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TableNextColumn();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(row.Availability == ResourceAvailability.ExcludedByValidation ? "PlayerSync validation excluded it" : "not available locally");
+            ImGui.TextUnformatted(row.Availability == ResourceAvailability.ExcludedByValidation
+                ? "PlayerSync validation excluded it"
+                : "not available locally");
+            Tooltip(row.Availability == ResourceAvailability.ExcludedByValidation
+                ? "PlayerSync's file validation removed this file because it could crash the game. It is never exported."
+                : "No complete local file: not downloaded yet, refused by the server, evicted from the cache, or only a temporary download file (.bin, .tmp), which is never exported.");
         }
 
         foreach (var row in inv.FileSwaps)
         {
+            if (_view is not (0 or 4)) continue;
             if (!Matches(row.GamePaths, row.FileSwapTarget)) continue;
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -361,6 +414,8 @@ public sealed class ExportWindow : Window, IDisposable
             ImGui.TextUnformatted("file swap to " + row.FileSwapTarget);
         }
     }
+
+    private static readonly string[] ViewNames = ["All files", "Ready to export", "Selected", "Missing or excluded", "File swaps"];
 
     private static readonly MatchStatus[] PackageStatuses =
         [MatchStatus.UserConfirmed, MatchStatus.Exact, MatchStatus.Strong, MatchStatus.Partial, MatchStatus.Ambiguous];
@@ -425,6 +480,7 @@ public sealed class ExportWindow : Window, IDisposable
             if (!snap.AllVerified)
                 Tooltip(string.Join("\n", snap.StatusCounts.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}: {kv.Value}").Concat(snap.Warnings.Take(10))));
             if (!string.IsNullOrWhiteSpace(snap.Description)) ImGui.TextColored(ImGuiColors.DalamudGrey, "Description: " + snap.Description);
+            DrawSnapshotProblems(snap);
         }
 
         var report = _viewSnapshot ? s.SnapshotMatch : s.LiveMatch;
@@ -592,6 +648,30 @@ public sealed class ExportWindow : Window, IDisposable
         }
 
         ImGui.TextColored(ImGuiColors.DalamudGrey, "Originals are copied unchanged. The per-item mods in the Mods folder are rebuilt from synced files and are not originals.");
+    }
+
+    private static void DrawSnapshotProblems(McdfSnapshot snap)
+    {
+        var files = snap.Files.Where(f => !f.Verified).ToList();
+        var swaps = snap.FileSwaps.Where(w => w.Status != McdfSwapStatus.Valid).ToList();
+        if (snap.FileSwaps.Count > 0)
+            ImGui.TextColored(ImGuiColors.DalamudGrey, $"File swaps: {snap.FileSwaps.Count - swaps.Count} of {snap.FileSwaps.Count} usable.");
+        if (files.Count + swaps.Count == 0 || !ImGui.CollapsingHeader($"Snapshot problems ({files.Count + swaps.Count})##cmx-snapproblems")) return;
+        var lines = Math.Min(8, files.Count + swaps.Count);
+        using var child = ImRaii.Child("##snapproblems", new Vector2(-1, ImGui.GetTextLineHeightWithSpacing() * lines + 4), true);
+        if (!child) return;
+        foreach (var f in files)
+        {
+            ImGui.TextColored(f.Status == McdfFileStatus.NotRead ? ImGuiColors.DalamudGrey : ImGuiColors.DalamudRed,
+                $"{f.Status}: {f.GamePaths.FirstOrDefault() ?? "?"} ({ExportCoordinator.FormatBytes(f.Length)})");
+            if (f.GamePaths.Count > 1) Tooltip(string.Join("\n", f.GamePaths));
+        }
+
+        foreach (var w in swaps)
+        {
+            ImGui.TextColored(ImGuiColors.DalamudYellow, $"Swap {w.Status}: {w.GamePaths.FirstOrDefault() ?? "?"} -> {w.Target}");
+            if (w.Problem != null) Tooltip(w.Problem);
+        }
     }
 
     private void TrySaveOverrides(PackageLibrary library)
