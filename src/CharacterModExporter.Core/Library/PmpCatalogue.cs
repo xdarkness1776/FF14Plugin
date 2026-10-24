@@ -329,9 +329,13 @@ public static class PmpReader
             case "Combining":
                 if (root.TryGetProperty("Containers", out var containers) && containers.ValueKind == JsonValueKind.Array)
                 {
+                    // Unnamed containers are labelled by their position, which is what selects them (a bit mask of the options).
                     var i = 0;
                     foreach (var container in containers.EnumerateArray())
-                        AddContainer(package, container, group.Name, Str(container, "Name") ?? $"#{i++}", group.Priority);
+                    {
+                        AddContainer(package, container, group.Name, Str(container, "Name") ?? $"#{i}", group.Priority);
+                        i++;
+                    }
                 }
 
                 break;

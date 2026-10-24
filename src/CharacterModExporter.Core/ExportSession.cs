@@ -141,7 +141,8 @@ public sealed class ExportSession : IDisposable
     public Task MatchLibraryAsync() => Run("Comparing the character with your package library.", async t =>
     {
         if (Library?.Index == null) throw new InvalidOperationException("Index your package library first (Settings, Original Package Library).");
-        if (State == null) await RefreshCoreAsync(false, t).ConfigureAwait(false);
+        // Always read the character again: matching a stale list would report packages the character no longer wears.
+        await RefreshCoreAsync(false, t).ConfigureAwait(false);
         if (State == null) throw new InvalidOperationException("The character's resources could not be read.");
         LiveMatch = Library.MatchLive(State, CharacterKey);
     });
@@ -184,11 +185,20 @@ public sealed class ExportSession : IDisposable
         var progress = new SyncProgress<long>(n =>
         {
             done += n;
-            Progress = new ExportProgress("Copying original packages.", 0, packages.Count, done, bytes);
+            // Packages are copied in order, so the finished ones are those whose sizes fit in the bytes copied so far.
+            long sum = 0;
+            var files = packages.TakeWhile(p => (sum += p.Package.Size) <= done).Count();
+            Progress = new ExportProgress("Copying original packages.", files, packages.Count, done, bytes);
         });
         var index = Library.Index;
         var copies = await OriginalPackageExporter.CopyAsync(index.LibraryFolder, layout.SessionFolder, packages,
             p => { var c = Library.Overrides.CategoryOf(p); return (c.Category, c.FromUser); }, progress, t).ConfigureAwait(false);
+
+        foreach (var c in copies)
+        {
+            c.ExportedAtUtc = DateTimeOffset.UtcNow;
+            c.Evidence = fromSnapshot ? "MCDF snapshot" : "Live";
+        }
 
         var report = fromSnapshot ? SnapshotMatch : LiveMatch;
         var manifest = new OriginalPackagesManifest
@@ -201,7 +211,7 @@ public sealed class ExportSession : IDisposable
             SnapshotFile = fromSnapshot ? Snapshot?.FilePath : null,
             LibraryFolder = index.LibraryFolder,
             LibraryIndexedAtUtc = index.BuiltAtUtc,
-            Packages = copies,
+            Packages = OriginalPackagesManifest.KeepEarlier(Path.Combine(layout.SessionFolder, OriginalPackageExporter.FolderName), copies),
             NotFoundInLibrary = report?.Resources.Where(r => r.Status is MatchStatus.Unmatched or MatchStatus.Unresolvable)
                 .Select(r => new ManifestUnmatched([.. r.Resource.GamePaths], r.Resource.SourceHash?.Hex, r.Status.ToString(), r.Reason)).ToList() ?? [],
         };

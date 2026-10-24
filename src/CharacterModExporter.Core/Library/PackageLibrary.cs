@@ -155,6 +155,30 @@ public sealed class OriginalPackagesManifest
     /// <summary>Character resources no package in the library contains, or that could not be compared.</summary>
     public List<ManifestUnmatched> NotFoundInLibrary { get; set; } = [];
 
+    /// <summary>
+    /// The new copies plus the entries of an earlier manifest in the same folder for packages not copied this time, so
+    /// exporting a few more packages later does not drop the record of the ones already there.
+    /// </summary>
+    public static List<OriginalPackageCopy> KeepEarlier(string folder, List<OriginalPackageCopy> copies)
+    {
+        var merged = new List<OriginalPackageCopy>(copies);
+        try
+        {
+            var path = Path.Combine(folder, FileName);
+            if (!File.Exists(path)) return merged;
+            var earlier = JsonSerializer.Deserialize<OriginalPackagesManifest>(File.ReadAllText(path));
+            if (earlier == null) return merged;
+            var now = copies.Select(c => c.LibraryRelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            merged.AddRange(earlier.Packages.Where(p => p.ExportedFile != null && !now.Contains(p.LibraryRelativePath)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // An unreadable earlier manifest is replaced; the copies themselves are untouched.
+        }
+
+        return merged;
+    }
+
     public void Write(string folder)
     {
         Directory.CreateDirectory(folder);
