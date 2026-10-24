@@ -25,6 +25,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     private readonly IDalamudPluginInterface _pi;
     private readonly IObjectTable _objects;
     private readonly IFramework _framework;
+    private readonly IClientState _clientState;
     private readonly IPluginLog _log;
     private readonly PlayerSyncIpcClient _playerSync;
     private readonly Func<IEnumerable<string?>> _forbiddenRoots;
@@ -39,9 +40,10 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     private readonly ExportJobRegistry _jobs;
     private readonly VanillaFileComparer _vanilla;
 
-    public PenumbraExportSource(IDalamudPluginInterface pi, IObjectTable objects, IFramework framework, IPluginLog log,
+    public PenumbraExportSource(IDalamudPluginInterface pi, IObjectTable objects, IFramework framework, IClientState clientState, IPluginLog log,
         PlayerSyncIpcClient playerSync, Func<IEnumerable<string?>> forbiddenRoots, VanillaFileComparer vanilla)
     {
+        _clientState = clientState;
         _vanilla = vanilla;
         _pi = pi;
         _objects = objects;
@@ -57,19 +59,34 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
         _jobs = new ExportJobRegistry(Resolve, () => _forbiddenRoots().Append(CacheFolder()).Append(ModDirectory()),
             log: (ex, msg) => _log.Warning(ex, msg));
         _framework.Update += OnFrameworkUpdate;
+        _clientState.TerritoryChanged += OnZoneChanged;
+        _clientState.InstanceChanged += OnZoneChanged;
     }
 
-    private DateTime _nextCheckUtc;
+    /// <summary>
+    /// Every object despawns when the zone or instance changes, and the game reuses their addresses for whoever loads
+    /// next. Nothing recorded before stays valid, so every watched character starts over and is found again by its
+    /// entity id when the window next reads it.
+    /// </summary>
+    private void OnZoneChanged<T>(T _)
+    {
+        foreach (var (_, watched) in _watched)
+        {
+            _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
+            watched.Address = nint.Zero;
+            watched.Tracker.Reset();
+        }
+    }
 
     /// <summary>
-    /// Once a second, checks that every watched character still lives at the address its Penumbra events are matched by.
+    /// Every frame, checks that every watched character still lives at the address its Penumbra events are matched by.
     /// When it despawned or moved, another object can take the address, and its files must never be recorded for it.
+    /// Checking every frame keeps the window in which such an event could be misattributed to one frame; it is a
+    /// dictionary lookup per watched character (only characters opened in the window are watched).
     /// </summary>
     private void OnFrameworkUpdate(IFramework framework)
     {
-        var now = DateTime.UtcNow;
-        if (now < _nextCheckUtc || _watched.IsEmpty) return;
-        _nextCheckUtc = now.AddSeconds(1);
+        if (_watched.IsEmpty) return;
         foreach (var (entityId, watched) in _watched)
         {
             var current = _objects.SearchByEntityId(entityId) as IPlayerCharacter;
@@ -125,7 +142,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     {
         var info = Capture(entityId, readResources: false);
         if (info == null || info.Handled != true) return false;
-        _watched[entityId].Tracker.MarkChanging();
+        info.Watched.Tracker.MarkChanging();
         _framework.RunOnFrameworkThread(() => _redraw.Invoke(info.ObjectIndex, RedrawType.Redraw)).GetAwaiter().GetResult();
         return true;
     }
@@ -140,12 +157,13 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
         if (info == null)
             return new(new CharacterStateDto { Lookup = CharacterLookup.NotSynced, LinkDetailsKnown = false }, new Dictionary<string, ResolvedFile>());
 
-        var tracker = _watched[entityId].Tracker;
+        // The capture's own tracker: the window may be closed (and the character forgotten) meanwhile.
+        var tracker = info.Watched.Tracker;
         return PenumbraResolution.Build(info.Name, info.Handled, tracker.Snapshot(), CacheFolder(), ModDirectory(), _hashes,
-            tracker.LastChangeUtc, DateTimeOffset.UtcNow, _vanilla);
+            tracker.LastChangeUtc, DateTimeOffset.UtcNow, _vanilla, tracker.Truncated);
     }
 
-    private sealed record Captured(string Name, int ObjectIndex, bool? Handled);
+    private sealed record Captured(string Name, int ObjectIndex, bool? Handled, Watched Watched);
 
     /// <summary>Reads the game object (and optionally Penumbra's on-screen resources) on the framework thread.</summary>
     private Captured? Capture(uint entityId, bool readResources)
@@ -167,7 +185,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
                 }
             }
 
-            return new Captured(pc.Name.TextValue, pc.ObjectIndex, handled);
+            return new Captured(pc.Name.TextValue, pc.ObjectIndex, handled, watched);
         }).GetAwaiter().GetResult();
     }
 
@@ -185,6 +203,17 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
 
         _byAddress[address] = watched;
         return watched;
+    }
+
+    /// <summary>
+    /// Stops watching a character (its window was closed): its events are no longer recorded and what was recorded is
+    /// dropped, so watching stays bounded by the open windows. Reading the character again starts a new capture.
+    /// </summary>
+    public void Forget(uint entityId)
+    {
+        if (!_watched.TryRemove(entityId, out var watched)) return;
+        _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
+        watched.Tracker.Reset();
     }
 
     /// <summary>Penumbra event, raised on game threads for every redirected resource of an identified object.</summary>
@@ -212,6 +241,8 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
     public void Dispose()
     {
         _framework.Update -= OnFrameworkUpdate;
+        _clientState.TerritoryChanged -= OnZoneChanged;
+        _clientState.InstanceChanged -= OnZoneChanged;
         _resolved.Dispose();
         _jobs.Dispose();
     }

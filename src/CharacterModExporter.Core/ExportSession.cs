@@ -209,6 +209,8 @@ public sealed class ExportSession : IDisposable
             World = Target.World,
             Evidence = fromSnapshot ? "MCDF snapshot" : "Live",
             SnapshotFile = fromSnapshot ? Snapshot?.FilePath : null,
+            EvidenceCoverage = (report?.Coverage ?? MatchCoverage.Unknown).ToString(),
+            EvidenceDescription = report?.SourceDescription,
             LibraryFolder = index.LibraryFolder,
             LibraryIndexedAtUtc = index.BuiltAtUtc,
             Packages = OriginalPackagesManifest.KeepEarlier(Path.Combine(layout.SessionFolder, OriginalPackageExporter.FolderName), copies),
@@ -276,10 +278,16 @@ public sealed class ExportSession : IDisposable
             return;
         }
 
-        var previous = Inventory.Assets.ToDictionary(a => a.CacheHash, a => a.Selected, StringComparer.OrdinalIgnoreCase);
+        var previous = Inventory.Assets.ToDictionary(a => a.CacheHash, a => (a.Selected, a.Activity), StringComparer.OrdinalIgnoreCase);
         var inventory = AssetInventory.Build(state);
         foreach (var row in inventory.Assets)
-            row.Selected = row.CanExport && (previous.Count == 0 || previous.GetValueOrDefault(row.CacheHash, true));
+        {
+            // Files the character no longer uses start unselected, and are unselected when they stop being used; the
+            // user can still tick them. Otherwise the user's choice is kept.
+            var inactive = row.Activity == ResourceActivity.NoLongerActive;
+            var keep = previous.TryGetValue(row.CacheHash, out var was) && (was.Activity == ResourceActivity.NoLongerActive) == inactive;
+            row.Selected = row.CanExport && (keep ? was.Selected : !inactive);
+        }
 
         t.ThrowIfCancellationRequested();
         inventory.CompareWithExport(PredictedAssetsFolder ?? LastOutcome?.Layout?.AssetsFolder, _verification, verify);

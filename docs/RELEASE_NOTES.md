@@ -2,6 +2,18 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.5.0.0: capture reliability. The exporter now knows which files a character still uses. Files that were on the
+character earlier but are gone after an outfit change or new PlayerSync data are shown as "no longer in use". They
+start unselected, and are kept out of the library match and of every package and item mod. Animations, VFX and
+sounds seen while they played are shown as "seen loading". Zone and instance changes, and closing a character's
+window, start its capture over, so files can never carry over to whoever loads next at the same memory address. The
+address check now runs every frame. The MCDF reader gives every stored file a status (verified, hash mismatch,
+missing bytes, invalid hash or path, conflicting paths). It knows which files PlayerSync's MCDF export always leaves
+out, reports truncated, padded or damaged files with a readable reason, and enforces size limits. Matching states its
+evidence (export IPC, live through Penumbra, or MCDF), whether that evidence is complete, and, for each package, how
+many matched files only it provides and how many cannot be compared. `Manifest.json` and `OriginalPackages.json` are
+now version 2 with these fields. The full audit is in docs/CAPTURE_RELIABILITY.md. Not tested in game yet.
+
 0.4.1.0: fixes. The Penumbra source now notices when a watched character despawns or respawns at another address, so
 files of an object that takes over its old address are never recorded for it. Matching always reads the character
 again first instead of reusing an older list, and the package list keeps its order (confirmed, then status, then most

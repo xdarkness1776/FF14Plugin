@@ -22,6 +22,13 @@ public sealed class AssetRow
     public ResourceAvailability Availability { get; init; }
     public SourceKind SourceKind { get; init; }
     public bool IsCompressedAlternate { get; init; }
+
+    /// <summary>The most current activity of the resources behind the file; null when the source does not track it.</summary>
+    public ResourceActivity? Activity { get; set; }
+
+    public DateTimeOffset? FirstSeenUtc { get; set; }
+    public DateTimeOffset? LastSeenUtc { get; set; }
+
     public List<string> GamePaths { get; } = [];
     public SortedSet<string> ObjectKinds { get; } = new(StringComparer.Ordinal);
     public ExportedFileState ExportedState { get; set; }
@@ -89,6 +96,13 @@ public sealed class AssetInventory
                 };
                 byHash[key] = row;
                 inventory.Assets.Add(row);
+                row.Activity = resource.Activity;
+                row.FirstSeenUtc = resource.FirstSeenUtc;
+                row.LastSeenUtc = resource.LastSeenUtc;
+            }
+            else if (resource.Activity is { } activity && (row.Activity == null || activity < row.Activity))
+            {
+                row.Activity = activity;
             }
 
             foreach (var gamePath in resource.GamePaths)

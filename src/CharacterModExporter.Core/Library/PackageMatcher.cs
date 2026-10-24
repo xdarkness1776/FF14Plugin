@@ -80,6 +80,15 @@ public sealed class PackageMatch
     /// <summary>Files and swaps of the used options that the character did not have (not loaded, or not applied).</summary>
     public int UnseenCount { get; set; }
 
+    /// <summary>
+    /// Files and swaps of the used options the evidence cannot contain (an MCDF never holds animations, sounds or most
+    /// VFX). They are neither for nor against the package, but keep it from being Exact: they were not compared.
+    /// </summary>
+    public int NotCapturableCount { get; set; }
+
+    /// <summary>Matched game paths no other package provides with the same content: the evidence for this package alone.</summary>
+    public int UniqueMatchedCount { get; set; }
+
     /// <summary>The options (containers) that have at least one match, plus the default option when it has content.</summary>
     public List<string> ActiveOptions { get; } = [];
 
@@ -100,8 +109,50 @@ public sealed class ResourceMatch
     public string? Reason { get; set; }
 }
 
+/// <summary>Where the character's resources for a comparison came from.</summary>
+public enum MatchSource
+{
+    /// <summary>Not stated (direct use of the matcher).</summary>
+    Unknown,
+    /// <summary>The PlayerSync export IPC: the full mapping PlayerSync applied, with original hashes.</summary>
+    ExportIpc,
+    /// <summary>Stock PlayerSync read through Penumbra: only what the game has loaded; textures may be compressed copies.</summary>
+    LivePenumbra,
+    /// <summary>A saved MCDF: one moment, without what the MCDF writer leaves out, and only files whose bytes matched their hash.</summary>
+    McdfSnapshot,
+}
+
+/// <summary>Whether the character's side of the comparison holds every resource it has.</summary>
+public enum MatchCoverage
+{
+    Unknown,
+    /// <summary>Every resource the character has applied was available to compare.</summary>
+    Complete,
+    /// <summary>Some resources cannot be in the evidence (not loaded, or left out of the MCDF), so absence proves nothing.</summary>
+    Partial,
+}
+
+/// <summary>What a comparison is based on.</summary>
+/// <param name="NotCapturable">Game paths the source can never contain, or null when it can contain any.</param>
+public sealed record MatchContext(MatchSource Source, MatchCoverage Coverage, string Description, Func<string, bool>? NotCapturable = null)
+{
+    public static readonly MatchContext ExportIpc = new(MatchSource.ExportIpc, MatchCoverage.Complete,
+        "PlayerSync's applied mapping, read through its export IPC: every applied file, with the original hashes.");
+
+    public static readonly MatchContext LivePenumbra = new(MatchSource.LivePenumbra, MatchCoverage.Partial,
+        "Files the game has loaded for the character, read through Penumbra: animations, VFX and sounds only once they played, " +
+        "and textures may be PlayerSync's compressed copies.");
+
+    public static readonly MatchContext Mcdf = new(MatchSource.McdfSnapshot, MatchCoverage.Partial,
+        "A saved MCDF snapshot. " + McdfWriterRules.Description + " Only stored files whose bytes matched their SHA-1 are used.",
+        McdfWriterRules.IsExcluded);
+}
+
 public sealed class MatchReport
 {
+    public MatchSource Source { get; init; }
+    public MatchCoverage Coverage { get; init; }
+    public string SourceDescription { get; init; } = string.Empty;
     public List<PackageMatch> Packages { get; } = [];
     public List<ResourceMatch> Resources { get; } = [];
 }
@@ -115,10 +166,17 @@ public sealed class MatchReport
 public static class PackageMatcher
 {
     /// <param name="confirmed">Relative paths of packages the user confirmed for this character.</param>
+    /// <param name="context">What the resources come from; decides what their absence means.</param>
     public static MatchReport Match(IReadOnlyList<CharacterResource> resources, IReadOnlyList<PmpPackage> packages,
-        IReadOnlySet<string>? confirmed = null)
+        IReadOnlySet<string>? confirmed = null, MatchContext? context = null)
     {
-        var report = new MatchReport();
+        var report = new MatchReport
+        {
+            Source = context?.Source ?? MatchSource.Unknown,
+            Coverage = context?.Coverage ?? MatchCoverage.Unknown,
+            SourceDescription = context?.Description ?? string.Empty,
+        };
+        var notCapturable = context?.NotCapturable;
         var byPath = new Dictionary<string, CharacterResource>(StringComparer.Ordinal);
         foreach (var r in resources)
         foreach (var gp in r.GamePaths)
@@ -160,7 +218,8 @@ public static class PackageMatcher
                 var gp = group.Key;
                 if (!byPath.TryGetValue(gp, out var r) || r.SourceHash is not { } h)
                 {
-                    match.UnseenCount++;
+                    if (notCapturable != null && !byPath.ContainsKey(gp) && notCapturable(gp)) match.NotCapturableCount++;
+                    else match.UnseenCount++;
                     continue;
                 }
 
@@ -195,6 +254,10 @@ public static class PackageMatcher
                 {
                     match.ConflictPaths.Add(group.Key);
                 }
+                else if (notCapturable != null && !byPath.ContainsKey(group.Key) && notCapturable(group.Key))
+                {
+                    match.NotCapturableCount++;
+                }
                 else
                 {
                     match.UnseenCount++;
@@ -208,7 +271,8 @@ public static class PackageMatcher
         foreach (var (match, keys, swapKeys) in candidates)
         {
             var self = match.Package.RelativePath;
-            var unique = keys.Any(k => providers[k].Count == 1) || swapKeys.Any(k => swapProviders[k].Count == 1);
+            match.UniqueMatchedCount = keys.Count(k => providers[k].Count == 1) + swapKeys.Count(k => swapProviders[k].Count == 1);
+            var unique = match.UniqueMatchedCount > 0;
             var shared = keys.SelectMany(k => providers[k]).Concat(swapKeys.SelectMany(k => swapProviders[k]))
                 .Where(p => p != self).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
             match.SharedWith.AddRange(shared);
@@ -228,7 +292,7 @@ public static class PackageMatcher
                     ? "Byte-identical copies of this package are in the library."
                     : "Every matching file is also in another package.");
             }
-            else if (match.UnseenCount == 0 && match.CompressedUnverifiedPaths.Count == 0)
+            else if (match.UnseenCount == 0 && match.NotCapturableCount == 0 && match.CompressedUnverifiedPaths.Count == 0)
             {
                 status = MatchStatus.Exact;
             }
@@ -236,6 +300,8 @@ public static class PackageMatcher
             {
                 status = MatchStatus.Strong;
                 if (match.UnseenCount > 0) match.Reasons.Add($"{match.UnseenCount} file(s) or swap(s) of the used options were not seen on the character.");
+                if (match.NotCapturableCount > 0)
+                    match.Reasons.Add($"{match.NotCapturableCount} file(s) or swap(s) of the used options are of a kind this evidence never contains, so they were not compared.");
                 if (match.CompressedUnverifiedPaths.Count > 0)
                     match.Reasons.Add($"{match.CompressedUnverifiedPaths.Count} texture(s) differ but may be compressed copies; they are not counted against the package.");
             }

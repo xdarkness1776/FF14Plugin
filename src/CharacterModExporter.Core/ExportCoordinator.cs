@@ -188,6 +188,9 @@ public sealed class ExportCoordinator
                 Error = r?.Error,
                 Sha1Verified = r?.Sha1Verified ?? false,
                 Sha256 = r?.Sha256,
+                Activity = row.Activity?.ToString(),
+                FirstSeenUtc = row.FirstSeenUtc,
+                LastSeenUtc = row.LastSeenUtc,
             });
         }
 
@@ -213,7 +216,7 @@ public sealed class ExportCoordinator
         string? reason = null;
         if (final.Phase != ExportJobPhase.Completed) reason = "not every selected file was exported";
         else if (state.SyncState != SyncState.Complete) reason = $"the character's synchronization is {state.SyncState}, so some resources are missing";
-        else if (manifest.Assets.Exists(a => !a.Selected)) reason = "not every available file was selected";
+        else if (manifest.Assets.Exists(a => !a.Selected && a.IsCurrent)) reason = "not every available file was selected";
 
         if (reason != null)
         {
@@ -221,7 +224,8 @@ public sealed class ExportCoordinator
             return;
         }
 
-        var files = manifest.Assets.Where(a => a.ExportedFile != null)
+        // Files the character no longer uses would fight the current ones for the same game paths.
+        var files = manifest.Assets.Where(a => a.ExportedFile != null && a.IsCurrent)
             .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths))
             .ToList();
         var swaps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -245,7 +249,7 @@ public sealed class ExportCoordinator
             result.FileCount, result.RedirectCount, result.SwapCount,
             "Structure checked after writing (meta.json, default_mod.json, game paths, every file present). Import in Penumbra has not been verified by this tool.",
             result.Omitted));
-        foreach (var asset in manifest.Assets.Where(a => a.ExportedFile != null)) asset.InInstallablePackage = true;
+        foreach (var asset in manifest.Assets.Where(a => a.ExportedFile != null && a.IsCurrent)) asset.InInstallablePackage = true;
         if (manifest.Sync.HasMetaManipulations)
             manifest.Notes.Add("The package omits the character's meta manipulations, so some items may look different than in game.");
     }
@@ -256,10 +260,10 @@ public sealed class ExportCoordinator
     /// </summary>
     private void BuildItemMods(ExportTarget target, ExportLayout layout, ExportManifest manifest)
     {
-        var exported = manifest.Assets.Where(a => a.ExportedFile != null)
+        var exported = manifest.Assets.Where(a => a.ExportedFile != null && a.IsCurrent)
             .Select(a => new PackageFile(Path.GetFullPath(Path.Combine(layout.SessionFolder, a.ExportedFile!)), Path.GetFileName(a.ExportedFile!), a.GamePaths))
             .ToList();
-        var notExported = manifest.Assets.Where(a => a.ExportedFile == null).SelectMany(a => a.GamePaths)
+        var notExported = manifest.Assets.Where(a => a.ExportedFile == null && a.IsCurrent).SelectMany(a => a.GamePaths)
             .Concat(manifest.Unresolved.SelectMany(u => u.GamePaths))
             .Select(gp => ItemModGrouper.Classify(gp).Key).ToHashSet(StringComparer.Ordinal);
 
