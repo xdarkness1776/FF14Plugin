@@ -1,5 +1,6 @@
 using System.Numerics;
 using CharacterModExporter.Core;
+using CharacterModExporter.Core.Library;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Colors;
 using Dalamud.Interface.ImGuiFileDialog;
@@ -20,10 +21,15 @@ public sealed class SettingsWindow : Window
     private string _pendingRootName;
     private string? _message;
     private bool _messageIsError;
+    private readonly PackageLibrary _library;
+    private string _pendingLibrary;
+    private string? _libraryMessage;
 
-    public SettingsWindow(Configuration config, ExportFolderService folders, Action<string> openFolder)
+    public SettingsWindow(Configuration config, ExportFolderService folders, Action<string> openFolder, PackageLibrary library)
         : base("Character Mod Exporter Settings##cmx-settings")
     {
+        _library = library;
+        _pendingLibrary = config.Export.LibraryFolder ?? string.Empty;
         _config = config;
         _folders = folders;
         _openFolder = openFolder;
@@ -105,7 +111,74 @@ public sealed class SettingsWindow : Window
         if (ImGui.InputInt("Seconds to wait for synchronization", ref wait)) { export.SyncWaitSeconds = Math.Clamp(wait, 5, 900); changed = true; }
         if (changed) _config.Save();
 
+        DrawLibrary();
         _dialog.Draw();
+    }
+
+    private void DrawLibrary()
+    {
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Original Package Library");
+        ImGui.Separator();
+        ImGui.TextWrapped("The folder with your original (numbered) .pmp files. It is only read: the index and your category and confirmation choices are saved in this plugin's settings folder.");
+        ImGui.SetNextItemWidth(-160);
+        ImGui.InputText("##library", ref _pendingLibrary, 1024);
+        ImGui.SameLine();
+        if (ImGui.Button("Choose Library Folder"))
+        {
+            var start = Directory.Exists(_pendingLibrary) ? _pendingLibrary : _folders.DefaultParentFolder;
+            _dialog.OpenFolderDialog("Choose the folder with your original .pmp packages", (ok, path) =>
+            {
+                if (ok && !string.IsNullOrWhiteSpace(path)) _pendingLibrary = path;
+            }, start, isModal: true);
+        }
+
+        var busy = _library.IsRefreshing;
+        using (ImRaii.Disabled(busy))
+        {
+            if (ImGui.Button("Save and Index Library"))
+            {
+                var folder = _pendingLibrary.Trim();
+                var error = PackageLibrary.ValidateFolder(folder, [SafeRoot()]);
+                if (error != null)
+                {
+                    _libraryMessage = error;
+                }
+                else
+                {
+                    _config.Export.LibraryFolder = Path.GetFullPath(folder);
+                    _config.Save();
+                    _libraryMessage = null;
+                    _ = _library.RefreshAsync(_config.Export.LibraryFolder);
+                }
+            }
+        }
+
+        ImGui.SameLine();
+        using (ImRaii.Disabled(!busy))
+        {
+            if (ImGui.Button("Cancel Indexing")) _library.CancelRefresh();
+        }
+
+        if (_library.Progress is { } p && busy)
+        {
+            ImGui.ProgressBar(p.Total > 0 ? (float)p.Done / p.Total : 0f, new Vector2(-1, 0), $"{p.Done}/{p.Total} {p.Current}");
+        }
+
+        if (_library.Index is { } index)
+        {
+            var current = _library.IsIndexOf(_config.Export.LibraryFolder);
+            ImGui.TextColored(current ? ImGuiColors.HealerGreen : ImGuiColors.DalamudYellow,
+                $"Indexed: {index.Packages.Count} package(s) in {index.LibraryFolder}, {index.BuiltAtUtc.ToLocalTime():g}" +
+                (current ? string.Empty : " (not the folder chosen above; index it again)"));
+            var broken = index.Packages.Count(pk => pk.Error != null);
+            if (broken > 0) ImGui.TextColored(ImGuiColors.DalamudYellow, $"{broken} package(s) could not be read and are skipped.");
+        }
+
+        if (_library.LastResult is { } r && !busy)
+            ImGui.TextColored(ImGuiColors.DalamudGrey, $"Last indexing: {r.Read} read, {r.Reused} unchanged, {r.Removed} removed.");
+        if (_library.LastError != null) ImGui.TextColored(ImGuiColors.DalamudRed, _library.LastError);
+        if (_libraryMessage != null) ImGui.TextColored(ImGuiColors.DalamudRed, _libraryMessage);
     }
 
     private string SafeRoot()

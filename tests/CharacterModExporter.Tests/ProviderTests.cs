@@ -54,6 +54,136 @@ public class ResourceResolverTests
         Assert.Equal(ResourceAvailability.Missing, resolution.State.Resources[0].Availability);
     }
 
+    [Fact]
+    public void MissingFirstPathDoesNotHideTheOtherAppliedPaths()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var tex = ps.AddCacheFile("tex", "shared texture");
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/first.tex", "chara/second.tex", "chara/third.tex"], tex.Hash, null));
+        pair.Modded[("chara/second.tex", tex.Hash)] = tex.Path;
+        pair.Modded[("chara/third.tex", tex.Hash)] = tex.Path;
+
+        var r = ps.Resolve(1).State.Resources.Single();
+
+        Assert.Equal(ResourceAvailability.Available, r.Availability);
+        Assert.Equal(["chara/second.tex", "chara/third.tex"], r.GamePaths);
+        Assert.Equal(["chara/first.tex"], r.MissingGamePaths);
+        Assert.Null(r.ExcludedGamePaths);
+    }
+
+    [Fact]
+    public void ValidationExcludingOnePathKeepsTheResourceForTheOthers()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var mdl = ps.AddCacheFile("mdl", "model");
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/a.mdl", "chara/b.mdl"], mdl.Hash, null));
+        pair.Excluded.Add(("chara/a.mdl", mdl.Hash));
+        pair.Modded[("chara/b.mdl", mdl.Hash)] = mdl.Path;
+
+        var r = ps.Resolve(1).State.Resources.Single();
+
+        Assert.Equal(ResourceAvailability.Available, r.Availability);
+        Assert.Equal(["chara/b.mdl"], r.GamePaths);
+        Assert.Equal(["chara/a.mdl"], r.ExcludedGamePaths);
+    }
+
+    [Fact]
+    public void AllPathsExcludedIsExcludedButPartlyMissingIsMissing()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var pair = ps.AddPair(1, "A B");
+        var h1 = new string('1', 40);
+        var h2 = new string('2', 40);
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/a.mdl", "chara/b.mdl"], h1, null));
+        pair.Excluded.Add(("chara/a.mdl", h1));
+        pair.Excluded.Add(("chara/b.mdl", h1));
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/c.mdl", "chara/d.mdl"], h2, null));
+        pair.Excluded.Add(("chara/c.mdl", h2));
+
+        var byHash = ps.Resolve(1).State.Resources.ToDictionary(r => r.Hash!);
+
+        Assert.Equal(ResourceAvailability.ExcludedByValidation, byHash[h1].Availability);
+        Assert.Equal(ResourceAvailability.Missing, byHash[h2].Availability);
+        Assert.Equal(["chara/c.mdl"], byHash[h2].ExcludedGamePaths);
+    }
+
+    [Fact]
+    public void CompressedAlternateIsFoundOnEveryPathAndExcludedUnderEitherHash()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var alt = ps.AddCacheFile("tex", "bc7 texture");
+        var source = new string('A', 40);
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/a.tex", "chara/b.tex", "chara/c.tex"], source, null));
+        pair.Redirects[source] = alt.Hash;
+        pair.Modded[("chara/b.tex", alt.Hash)] = alt.Path;
+        pair.Excluded.Add(("chara/a.tex", alt.Hash));
+        pair.Excluded.Add(("chara/c.tex", source));
+
+        var resolution = ps.Resolve(1);
+        var r = resolution.State.Resources.Single();
+
+        Assert.Equal(ResourceAvailability.Available, r.Availability);
+        Assert.True(r.IsCompressedAlternate);
+        Assert.Equal(source, r.Hash);
+        Assert.Equal(alt.Hash, r.CacheHash);
+        Assert.Equal(["chara/b.tex"], r.GamePaths);
+        Assert.Equal(["chara/a.tex", "chara/c.tex"], r.ExcludedGamePaths);
+        Assert.True(resolution.Files.ContainsKey(alt.Hash));
+        Assert.False(resolution.Files.ContainsKey(source));
+    }
+
+    [Fact]
+    public void LookupIgnoresCaseOfHashAndPath()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var tex = ps.AddCacheFile("tex", "texture");
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/A.tex"], tex.Hash, null));
+        pair.Modded[("chara/a.tex", tex.Hash.ToLowerInvariant())] = tex.Path;
+
+        Assert.Equal(ResourceAvailability.Available, ps.Resolve(1).State.Resources.Single().Availability);
+    }
+
+    [Fact]
+    public void SwapsRemovedByValidationAreNotReportedAsApplied()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/a.tex"], string.Empty, "bg/ex5/missing.tex"));
+        pair.Excluded.Add(("chara/a.tex", null));
+        pair.Applied.Add(new ReplacementInput("Player", ["chara/b.tex", "chara/c.tex"], string.Empty, "chara/target.tex"));
+        pair.Modded[("chara/c.tex", null)] = "chara/target.tex";
+
+        var resources = ps.Resolve(1).State.Resources;
+
+        Assert.Equal(ResourceAvailability.ExcludedByValidation, resources[0].Availability);
+        Assert.Equal(ResourceAvailability.FileSwap, resources[1].Availability);
+        Assert.Equal(["chara/c.tex"], resources[1].GamePaths);
+    }
+
+    [Fact]
+    public void ResourceWithoutGamePathsIsMissing()
+    {
+        using var dir = new TempDir();
+        using var ps = new FakePlayerSync(dir);
+        var pair = ps.AddPair(1, "A B");
+        pair.Applied.Add(new ReplacementInput("Player", [], new string('B', 40), null));
+
+        var r = ps.Resolve(1).State.Resources.Single();
+
+        Assert.Equal(ResourceAvailability.Missing, r.Availability);
+        Assert.Empty(r.GamePaths);
+    }
+
     [Theory]
     [InlineData(null, false, null, SyncState.NoData)]
     [InlineData("A", true, "A", SyncState.InProgress)]

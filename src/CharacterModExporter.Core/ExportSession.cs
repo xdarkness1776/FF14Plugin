@@ -1,3 +1,4 @@
+using CharacterModExporter.Core.Library;
 using PlayerSyncExport.Contracts;
 
 namespace CharacterModExporter.Core;
@@ -20,10 +21,14 @@ public sealed class ExportSession : IDisposable
     private CancellationTokenSource _cts = new();
     private Task _current = Task.CompletedTask;
     private bool _disposed;
+    private readonly string _exporterVersion;
 
     public ExportSession(ExportTarget target, IPlayerSyncExportApi api, ExportFolderService folders, ExportCoordinator coordinator,
-        Func<ExportSettings> settings, Func<ExportTarget, Task<bool>> isPresent, Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<ExportSettings> settings, Func<ExportTarget, Task<bool>> isPresent, Func<TimeSpan, CancellationToken, Task>? delay = null,
+        PackageLibrary? library = null, string exporterVersion = "")
     {
+        Library = library;
+        _exporterVersion = exporterVersion;
         Target = target;
         _api = api;
         _folders = folders;
@@ -113,6 +118,99 @@ public sealed class ExportSession : IDisposable
         var failed = FailedFiles.Select(f => f.CacheHash).ToList();
         if (failed.Count == 0) return;
         await ExportCoreAsync(failed, LastOutcome?.Layout, t).ConfigureAwait(false);
+    });
+
+    public PackageLibrary? Library { get; }
+
+    /// <summary>The last comparison of the live character with the library.</summary>
+    public MatchReport? LiveMatch { get; private set; }
+
+    /// <summary>A saved MCDF snapshot the user opened, and its own comparison. Never merged with <see cref="LiveMatch"/>.</summary>
+    public McdfSnapshot? Snapshot { get; private set; }
+
+    public MatchReport? SnapshotMatch { get; private set; }
+
+    /// <summary>The result of the last export of original packages.</summary>
+    public List<OriginalPackageCopy>? LastOriginalExport { get; private set; }
+
+    public string? LastOriginalExportFolder { get; private set; }
+
+    public string CharacterKey => PackageOverrideStore.CharacterKey(Target.Name, Target.World);
+
+    /// <summary>Compares the character's current resources with the original package library.</summary>
+    public Task MatchLibraryAsync() => Run("Comparing the character with your package library.", async t =>
+    {
+        if (Library?.Index == null) throw new InvalidOperationException("Index your package library first (Settings, Original Package Library).");
+        if (State == null) await RefreshCoreAsync(false, t).ConfigureAwait(false);
+        if (State == null) throw new InvalidOperationException("The character's resources could not be read.");
+        LiveMatch = Library.MatchLive(State, CharacterKey);
+    });
+
+    /// <summary>Reads a saved MCDF without applying it and compares it with the library as a separate snapshot.</summary>
+    public Task OpenSnapshotAsync(string path) => Run("Reading the MCDF snapshot.", t =>
+    {
+        var snapshot = McdfReader.Read(path, verifyContents: true, t);
+        Snapshot = snapshot;
+        SnapshotMatch = Library?.MatchSnapshot(snapshot);
+        return Task.CompletedTask;
+    });
+
+    /// <summary>Shows a message from the window (for example a failed save) the same way operation errors are shown.</summary>
+    public void ReportError(string message) => LastError = message;
+
+    public void CloseSnapshot()
+    {
+        Snapshot = null;
+        SnapshotMatch = null;
+    }
+
+    /// <summary>Re-applies the user's confirmations to the current reports without reading the character again.</summary>
+    public void RecomputeMatches()
+    {
+        if (Library == null) return;
+        if (State != null && LiveMatch != null) LiveMatch = Library.MatchLive(State, CharacterKey);
+        if (Snapshot != null && SnapshotMatch != null) SnapshotMatch = Library.MatchSnapshot(Snapshot);
+    }
+
+    /// <summary>Copies the chosen original packages, unchanged and verified, into the character's export folder.</summary>
+    public Task ExportOriginalsAsync(IReadOnlyList<PackageMatch> packages, bool fromSnapshot) => Run("Copying original packages.", async t =>
+    {
+        if (Library?.Index == null) throw new InvalidOperationException("Index your package library first.");
+        if (packages.Count == 0) throw new InvalidOperationException("Select at least one package.");
+        var settings = _settings();
+        var layout = LastOutcome?.Layout ?? _folders.Prepare(settings, Target.Name, Target.World, DateTimeOffset.Now, createInstallable: false);
+        var bytes = packages.Sum(p => p.Package.Size);
+        long done = 0;
+        var progress = new SyncProgress<long>(n =>
+        {
+            done += n;
+            Progress = new ExportProgress("Copying original packages.", 0, packages.Count, done, bytes);
+        });
+        var index = Library.Index;
+        var copies = await OriginalPackageExporter.CopyAsync(index.LibraryFolder, layout.SessionFolder, packages,
+            p => { var c = Library.Overrides.CategoryOf(p); return (c.Category, c.FromUser); }, progress, t).ConfigureAwait(false);
+
+        var report = fromSnapshot ? SnapshotMatch : LiveMatch;
+        var manifest = new OriginalPackagesManifest
+        {
+            ExporterVersion = _exporterVersion,
+            ExportedAtUtc = DateTimeOffset.UtcNow,
+            CharacterName = Target.Name,
+            World = Target.World,
+            Evidence = fromSnapshot ? "MCDF snapshot" : "Live",
+            SnapshotFile = fromSnapshot ? Snapshot?.FilePath : null,
+            LibraryFolder = index.LibraryFolder,
+            LibraryIndexedAtUtc = index.BuiltAtUtc,
+            Packages = copies,
+            NotFoundInLibrary = report?.Resources.Where(r => r.Status is MatchStatus.Unmatched or MatchStatus.Unresolvable)
+                .Select(r => new ManifestUnmatched([.. r.Resource.GamePaths], r.Resource.SourceHash?.Hex, r.Status.ToString(), r.Reason)).ToList() ?? [],
+        };
+        var folder = Path.Combine(layout.SessionFolder, OriginalPackageExporter.FolderName);
+        manifest.Write(folder);
+        LastOriginalExport = copies;
+        LastOriginalExportFolder = folder;
+        var failed = copies.Count(c => c.ExportedFile == null);
+        if (failed > 0) LastError = $"{failed} of {copies.Count} package(s) were not copied; see the list for the reason.";
     });
 
     public void SelectAllAvailable()

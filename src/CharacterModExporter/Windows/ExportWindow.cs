@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Numerics;
 using CharacterModExporter.Core;
+using CharacterModExporter.Core.Library;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Colors;
+using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using PlayerSyncExport.Contracts;
@@ -17,6 +19,13 @@ public sealed class ExportWindow : Window, IDisposable
     private readonly Action<string> _openFolder;
     private string _filter = string.Empty;
     private bool _showReport;
+    private bool _showOriginals;
+    private bool _viewSnapshot;
+    private string _packageFilter = string.Empty;
+    private int _statusFilter;
+    private string _categoryEdit = string.Empty;
+    private readonly HashSet<string> _selectedPackages = new(StringComparer.Ordinal);
+    private readonly FileDialogManager _dialog = new();
     private (string Path, DateTime Written, string Text)? _report;
 
     public ExportWindow(ExportSession session, Action openSettings, Action<string> openFolder)
@@ -43,8 +52,10 @@ public sealed class ExportWindow : Window, IDisposable
         ImGui.Separator();
         DrawControls();
         ImGui.Separator();
-        if (_showReport) DrawReport();
+        if (_showOriginals) DrawOriginals();
+        else if (_showReport) DrawReport();
         else DrawInventory();
+        _dialog.Draw();
     }
 
     private void DrawHeader()
@@ -165,7 +176,20 @@ public sealed class ExportWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("Open Character Folder")) _openFolder(s.LastOutcome?.Layout?.SessionFolder ?? s.CharacterFolder);
         ImGui.SameLine();
-        if (ImGui.Button(_showReport ? "Show Resources" : "View Export Report")) _showReport = !_showReport;
+        if (ImGui.Button(_showReport ? "Show Resources" : "View Export Report"))
+        {
+            _showReport = !_showReport;
+            _showOriginals = false;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button(_showOriginals ? "Show Resources##orig" : "Original Packages"))
+        {
+            _showOriginals = !_showOriginals;
+            _showReport = false;
+        }
+
+        Tooltip("Find the original .pmp files in your own library that this character's files come from, and copy them unchanged.");
         ImGui.SameLine();
         using (ImRaii.Disabled(busy))
         {
@@ -294,6 +318,275 @@ public sealed class ExportWindow : Window, IDisposable
             ImGui.TableNextColumn();
             ImGui.TextUnformatted("file swap to " + row.FileSwapTarget);
         }
+    }
+
+    private static readonly MatchStatus[] PackageStatuses =
+        [MatchStatus.UserConfirmed, MatchStatus.Exact, MatchStatus.Strong, MatchStatus.Partial, MatchStatus.Ambiguous];
+
+    private void DrawOriginals()
+    {
+        var s = _session;
+        var library = s.Library;
+        if (library?.Index == null)
+        {
+            ImGui.TextWrapped("No package library is indexed yet. Choose the folder with your original .pmp files under Settings, Original Package Library, and index it.");
+            if (ImGui.Button("Open Settings##orig")) _openSettings();
+            return;
+        }
+
+        var index = library.Index;
+        ImGui.TextUnformatted($"Library: {index.LibraryFolder}    {index.Packages.Count} package(s), indexed {index.BuiltAtUtc.ToLocalTime():g}");
+        using (ImRaii.Disabled(s.IsBusy))
+        {
+            if (ImGui.Button("Match Live Character"))
+            {
+                _viewSnapshot = false;
+                _ = s.MatchLibraryAsync();
+            }
+
+            Tooltip("Compares the files PlayerSync applied to this character now with the files inside your packages (SHA-1 content hashes).");
+            ImGui.SameLine();
+            if (ImGui.Button("Open MCDF Snapshot..."))
+            {
+                _dialog.OpenFileDialog("Open a saved PlayerSync character file (MCDF)", ".mcdf", (ok, path) =>
+                {
+                    if (!ok || string.IsNullOrWhiteSpace(path)) return;
+                    _viewSnapshot = true;
+                    _ = s.OpenSnapshotAsync(path);
+                });
+            }
+
+            Tooltip("Reads a saved .mcdf file without applying it, and compares it with your library separately from the live character.");
+        }
+
+        if (s.Snapshot != null)
+        {
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Live", !_viewSnapshot)) _viewSnapshot = false;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("Snapshot", _viewSnapshot)) _viewSnapshot = true;
+            ImGui.SameLine();
+            if (ImGui.Button("Close Snapshot"))
+            {
+                s.CloseSnapshot();
+                _viewSnapshot = false;
+            }
+        }
+
+        if (_viewSnapshot && s.Snapshot is { } snap)
+        {
+            ImGui.TextColored(ImGuiColors.DalamudViolet,
+                $"Saved snapshot (not live): {Path.GetFileName(snap.FilePath)}, saved {snap.FileLastWriteUtc.ToLocalTime():g}, {snap.Files.Count} file(s), " +
+                (snap.AllVerified ? "every file matches its hash." : "some files could not be verified and are not used as evidence."));
+            if (!string.IsNullOrWhiteSpace(snap.Description)) ImGui.TextColored(ImGuiColors.DalamudGrey, "Description: " + snap.Description);
+        }
+
+        var report = _viewSnapshot ? s.SnapshotMatch : s.LiveMatch;
+        if (report == null)
+        {
+            ImGui.TextUnformatted(_viewSnapshot ? "Open an MCDF snapshot to compare it." : "Press Match Live Character to compare this character with your library.");
+            return;
+        }
+
+        var counts = report.Resources.GroupBy(r => r.Status).ToDictionary(g => g.Key, g => g.Count());
+        ImGui.TextUnformatted($"Character files: {counts.GetValueOrDefault(MatchStatus.Exact)} found in one package, {counts.GetValueOrDefault(MatchStatus.Ambiguous)} in several, " +
+            $"{counts.GetValueOrDefault(MatchStatus.Unmatched)} in none, {counts.GetValueOrDefault(MatchStatus.Unresolvable)} could not be compared.");
+
+        ImGui.SetNextItemWidth(220);
+        ImGui.InputTextWithHint("##pkgfilter", "Search name, number or category", ref _packageFilter, 256);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(160);
+        var names = new[] { "All statuses" }.Concat(PackageStatuses.Select(Describe)).ToArray();
+        ImGui.Combo("##status", ref _statusFilter, names, names.Length);
+        ImGui.SameLine();
+        if (ImGui.Button("Select Exact and Confirmed"))
+        {
+            _selectedPackages.Clear();
+            foreach (var m in report.Packages.Where(m => m.Status is MatchStatus.Exact or MatchStatus.UserConfirmed)) _selectedPackages.Add(m.Package.RelativePath);
+        }
+
+        ImGui.SameLine();
+        var chosen = report.Packages.Where(m => _selectedPackages.Contains(m.Package.RelativePath)).ToList();
+        using (ImRaii.Disabled(s.IsBusy || chosen.Count == 0))
+        {
+            if (ImGui.Button($"Export Selected Originals ({chosen.Count})")) _ = s.ExportOriginalsAsync(chosen, _viewSnapshot);
+        }
+
+        Tooltip("Copies the selected .pmp files byte for byte (checked with SHA-256) into this character's export folder, under \"Original packages\". Existing files are never replaced.");
+
+        const ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders | ImGuiTableFlags.ScrollY | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingFixedFit;
+        var tableHeight = s.LastOriginalExport != null ? -ImGui.GetTextLineHeightWithSpacing() * 6 : -ImGui.GetTextLineHeightWithSpacing() * 2;
+        using (var table = ImRaii.Table("##packages", 9, flags, new Vector2(-1, tableHeight)))
+        {
+            if (table)
+            {
+                ImGui.TableSetupScrollFreeze(0, 1);
+                ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 24);
+                ImGui.TableSetupColumn("No.");
+                ImGui.TableSetupColumn("Package", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableSetupColumn("Match");
+                ImGui.TableSetupColumn("Files matched");
+                ImGui.TableSetupColumn("Not seen");
+                ImGui.TableSetupColumn("Options used");
+                ImGui.TableSetupColumn("Category");
+                ImGui.TableSetupColumn("Confirmed");
+                ImGui.TableHeadersRow();
+
+                foreach (var m in report.Packages)
+                {
+                    var p = m.Package;
+                    var (category, fromUser, evidence) = library.Overrides.CategoryOf(p);
+                    if (_statusFilter > 0 && m.Status != PackageStatuses[_statusFilter - 1]) continue;
+                    if (_packageFilter.Length > 0 && !(p.FileName.Contains(_packageFilter, StringComparison.OrdinalIgnoreCase)
+                                                       || (p.Name?.Contains(_packageFilter, StringComparison.OrdinalIgnoreCase) ?? false)
+                                                       || category.Contains(_packageFilter, StringComparison.OrdinalIgnoreCase))) continue;
+                    var id = p.RelativePath;
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn();
+                    var selected = _selectedPackages.Contains(id);
+                    if (ImGui.Checkbox($"##pkg{id}", ref selected))
+                    {
+                        if (selected) _selectedPackages.Add(id);
+                        else _selectedPackages.Remove(id);
+                    }
+
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(p.NumberText ?? "-");
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(p.FileName);
+                    Tooltip($"{p.RelativePath}\nName: {p.DisplayName}\nAuthor: {p.Author ?? "-"}    Version: {p.Version ?? "-"}\nSHA-256: {p.Sha256}" +
+                            (m.SharedWith.Count > 0 ? "\nShares matching files with: " + string.Join(", ", m.SharedWith.Take(5)) : string.Empty) +
+                            (m.IdenticalCopies.Count > 0 ? "\nIdentical copies: " + string.Join(", ", m.IdenticalCopies) : string.Empty));
+                    ImGui.TableNextColumn();
+                    ImGui.TextColored(StatusColor(m.Status), Describe(m.Status));
+                    Tooltip(Explain(m));
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted((m.MatchedPaths.Count + m.MatchedSwaps.Count).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                                         (m.ConflictPaths.Count > 0 ? $" ({m.ConflictPaths.Count} differ)" : string.Empty));
+                    if (m.ConflictPaths.Count > 0) Tooltip("Different content on the character:\n" + string.Join("\n", m.ConflictPaths.Take(20)));
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(m.UnseenCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(string.Join(", ", m.ActiveOptions));
+                    ImGui.TableNextColumn();
+                    if (ImGui.SmallButton($"{category}{(fromUser ? " (yours)" : string.Empty)}##cat{id}"))
+                    {
+                        _categoryEdit = fromUser ? category : string.Empty;
+                        ImGui.OpenPopup($"category{id}");
+                    }
+
+                    Tooltip(evidence + " Click to set your own category; it is saved separately and never written into the package.");
+                    using (var popup = ImRaii.Popup($"category{id}"))
+                    {
+                        if (popup)
+                        {
+                            ImGui.TextUnformatted("Category for " + p.FileName);
+                            ImGui.SetNextItemWidth(260);
+                            ImGui.InputTextWithHint("##catedit", "e.g. Gear/Body", ref _categoryEdit, 128);
+                            if (ImGui.Button("Save"))
+                            {
+                                library.Overrides.SetCategory(p, _categoryEdit);
+                                TrySaveOverrides(library);
+                                ImGui.CloseCurrentPopup();
+                            }
+
+                            ImGui.SameLine();
+                            if (ImGui.Button("Use detected"))
+                            {
+                                library.Overrides.SetCategory(p, null);
+                                TrySaveOverrides(library);
+                                ImGui.CloseCurrentPopup();
+                            }
+                        }
+                    }
+
+                    ImGui.TableNextColumn();
+                    if (_viewSnapshot)
+                    {
+                        ImGui.TextDisabled("-");
+                        Tooltip("Confirmations apply to the live character.");
+                    }
+                    else
+                    {
+                        var confirmed = m.Status == MatchStatus.UserConfirmed;
+                        if (ImGui.Checkbox($"##conf{id}", ref confirmed))
+                        {
+                            library.Overrides.SetConfirmed(s.CharacterKey, p, confirmed);
+                            TrySaveOverrides(library);
+                            s.RecomputeMatches();
+                        }
+
+                        Tooltip("Mark this package as the one this character uses. The computed status is kept in the export manifest.");
+                    }
+                }
+            }
+        }
+
+        if (s.LastOriginalExport is { } copies)
+        {
+            var ok = copies.Count(c => c.ExportedFile != null);
+            ImGui.TextColored(ok == copies.Count ? ImGuiColors.HealerGreen : ImGuiColors.DalamudYellow,
+                $"Last copy: {ok} of {copies.Count} package(s) in {s.LastOriginalExportFolder}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Open##origfolder") && s.LastOriginalExportFolder != null) _openFolder(s.LastOriginalExportFolder);
+            using var child = ImRaii.Child("##origresults", new Vector2(-1, ImGui.GetTextLineHeightWithSpacing() * 4), false);
+            if (child)
+            {
+                foreach (var c in copies)
+                {
+                    var color = c.ExportedFile != null ? ImGuiColors.HealerGreen : ImGuiColors.DalamudRed;
+                    ImGui.TextColored(color, $"{c.LibraryRelativePath}: {c.Outcome}" + (c.Error != null ? " - " + c.Error : string.Empty));
+                }
+            }
+        }
+
+        ImGui.TextColored(ImGuiColors.DalamudGrey, "Originals are copied unchanged. The per-item mods in the Mods folder are rebuilt from synced files and are not originals.");
+    }
+
+    private void TrySaveOverrides(PackageLibrary library)
+    {
+        try
+        {
+            library.SaveOverrides();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _session.ReportError("Could not save your package choices: " + ex.Message);
+        }
+    }
+
+    private static string Describe(MatchStatus status) => status switch
+    {
+        MatchStatus.UserConfirmed => "Confirmed by you",
+        MatchStatus.Exact => "Exact",
+        MatchStatus.Strong => "Strong",
+        MatchStatus.Partial => "Partial",
+        MatchStatus.Ambiguous => "Ambiguous",
+        MatchStatus.Unmatched => "Not in library",
+        _ => "Cannot compare",
+    };
+
+    private static Vector4 StatusColor(MatchStatus status) => status switch
+    {
+        MatchStatus.Exact or MatchStatus.UserConfirmed => ImGuiColors.HealerGreen,
+        MatchStatus.Strong => ImGuiColors.ParsedBlue,
+        MatchStatus.Partial => ImGuiColors.DalamudYellow,
+        MatchStatus.Ambiguous => ImGuiColors.DalamudOrange,
+        _ => ImGuiColors.DalamudRed,
+    };
+
+    private static string Explain(PackageMatch m)
+    {
+        var text = (m.Status == MatchStatus.UserConfirmed ? m.ComputedStatus : m.Status) switch
+        {
+            MatchStatus.Exact => "Every file of the options used was found on the character with the same content, and no other package explains them.",
+            MatchStatus.Strong => "Files match and none contradicts, but not every file of the options used was seen on the character.",
+            MatchStatus.Partial => "Some files match, but the character has different content at other paths of the same options.",
+            MatchStatus.Ambiguous => "The matching files are also in other packages, so they cannot tell which one is used.",
+            _ => string.Empty,
+        };
+        if (m.Status == MatchStatus.UserConfirmed) text = $"You confirmed this package. Computed: {Describe(m.ComputedStatus)}. " + text;
+        return string.Join("\n", new[] { text }.Concat(m.Reasons));
     }
 
     private bool Matches(IReadOnlyList<string> gamePaths, string? hash)

@@ -18,8 +18,9 @@ public static class VerifiedFileCopier
     /// Copies <paramref name="sourcePath"/> to <c>destinationDirectory/fileName</c>.
     /// </summary>
     /// <param name="expectedSha1">When given, the copy is accepted only if the SHA-1 of the data matches.</param>
+    /// <param name="expectedSha256">When given, the copy is accepted only if the SHA-256 of the data matches.</param>
     public static async Task<CopyResult> CopyAsync(string sourcePath, string destinationDirectory, string fileName,
-        string? expectedSha1, IProgress<long>? progress, CancellationToken token)
+        string? expectedSha1, IProgress<long>? progress, CancellationToken token, string? expectedSha256 = null)
     {
         var finalPath = ExportPathPolicy.CombineWithin(destinationDirectory, fileName);
         var tempPath = finalPath + "." + Guid.NewGuid().ToString("N")[..8] + TempSuffix;
@@ -76,6 +77,13 @@ public static class VerifiedFileCopier
             TryDelete(tempPath);
             return new(FileExportOutcome.IntegrityMismatch, length, false, sha256Hex,
                 $"SHA-1 of the copied data is {sha1Hex}, expected {expectedSha1.ToUpperInvariant()}. The cache file may be incomplete or was changed.");
+        }
+
+        if (expectedSha256 != null && !string.Equals(sha256Hex, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            TryDelete(tempPath);
+            return new(FileExportOutcome.IntegrityMismatch, length, verified, sha256Hex,
+                $"SHA-256 of the copied data is {sha256Hex}, expected {expectedSha256.ToUpperInvariant()}. The file changed since it was indexed.");
         }
 
         try

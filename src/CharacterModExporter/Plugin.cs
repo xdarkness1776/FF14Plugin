@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CharacterModExporter.Core;
+using CharacterModExporter.Core.Library;
 using CharacterModExporter.Services;
 using CharacterModExporter.Windows;
 using Dalamud.Game.Command;
@@ -36,6 +37,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PlayerContextMenuService _contextMenu;
     private readonly SettingsWindow _settingsWindow;
     private readonly ICallGateSubscriber<string> _penumbraModDirectory;
+    private readonly PackageLibrary _library;
 
     public Plugin()
     {
@@ -52,7 +54,9 @@ public sealed class Plugin : IDalamudPlugin
         _coordinator = new ExportCoordinator(_source, _folders, PluginInterface.Manifest.AssemblyVersion.ToString(), itemNames: itemNames.Resolve);
         _selection = new CharacterSelectionService(ObjectTable, Framework);
 
-        _settingsWindow = new SettingsWindow(_config, _folders, OpenFolder);
+        // The index and the user's package choices live in this plugin's own configuration folder, never in the library.
+        _library = new PackageLibrary(PluginInterface.ConfigDirectory.FullName);
+        _settingsWindow = new SettingsWindow(_config, _folders, OpenFolder, _library);
         _windows.AddWindow(_settingsWindow);
 
         _contextMenu = new PlayerContextMenuService(ContextMenu, _selection, _ipc, () => _config.Export, OpenExportWindow);
@@ -115,7 +119,8 @@ public sealed class Plugin : IDalamudPlugin
             _exportWindows.Remove(target.EntityId);
         }
 
-        var session = new ExportSession(target, _source, _folders, _coordinator, () => _config.Export, _selection.IsStillPresentAsync);
+        var session = new ExportSession(target, _source, _folders, _coordinator, () => _config.Export, _selection.IsStillPresentAsync,
+            library: _library, exporterVersion: PluginInterface.Manifest.AssemblyVersion.ToString());
         var window = new ExportWindow(session, () => _settingsWindow.IsOpen = true, OpenFolder);
         _exportWindows[target.EntityId] = window;
         _windows.AddWindow(window);
@@ -136,6 +141,7 @@ public sealed class Plugin : IDalamudPlugin
         foreach (var window in _exportWindows.Values) window.Dispose();
         _exportWindows.Clear();
         _windows.RemoveAllWindows();
+        _library.CancelRefresh();
         _penumbra.Dispose();
     }
 }
