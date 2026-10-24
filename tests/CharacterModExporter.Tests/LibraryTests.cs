@@ -55,7 +55,7 @@ public class PmpReaderTests
                 ("group_002_extras.json", new { Name = "Extras", Type = "Multi", Options = new object[]
                     { new { Name = "Glow", Priority = 5, Files = new Dictionary<string, string> { ["vfx/common/eff/glow.avfx"] = "files\\glow.avfx" } } } }),
                 ("group_003_combo.json", new { Name = "Combo", Type = "Combining", Options = new object[] { new { Name = "A" } },
-                    Containers = new object[] { new { Files = new Dictionary<string, string>() }, new { Name = "With A", Files = new Dictionary<string, string> { ["chara/c.tex"] = "files\\c.tex" } } } }),
+                    Containers = new object[] { new { Files = new Dictionary<string, string>() }, new { Name = "With A", Files = new Dictionary<string, string> { ["chara/c.tex"] = "files\\c.tex" } }, new { Files = new Dictionary<string, string>() } } }),
                 ("group_004_imc.json", new { Name = "Attributes", Type = "Imc", Options = new object[] { new { Name = "Off", IsDisableSubMod = true } } }),
             ],
             new Dictionary<string, string>
@@ -72,7 +72,7 @@ public class PmpReaderTests
         Assert.Equal("Test Outfit", p.Name);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), p.Sha256);
         Assert.Equal(["Colour", "Extras", "Combo", "Attributes"], p.Groups.Select(g => g.Name));
-        Assert.Equal(["Default", "Colour / Red", "Colour / Blue", "Extras / Glow", "Combo / #0", "Combo / With A"], p.Containers.Select(c => c.Label));
+        Assert.Equal(["Default", "Colour / Red", "Colour / Blue", "Extras / Glow", "Combo / #0", "Combo / With A", "Combo / #2"], p.Containers.Select(c => c.Label));
         Assert.Equal(5, p.Containers[3].Priority);
         Assert.Equal(5, p.Payloads.Count);
         Assert.All(p.Payloads, x => Assert.NotNull(x.Sha1));
@@ -277,6 +277,38 @@ public class PackageMatcherTests
     }
 
     [Fact]
+    public void ConfirmedComeFirstThenByStatusAndMatchedFiles()
+    {
+        var exact = Package("001 Exact.pmp", (0, "chara/a.mdl", "a"));
+        var strongMany = Package("002 Strong.pmp", (0, "chara/b.mdl", "b"), (0, "chara/c.mdl", "c"), (0, "chara/x.mdl", "unseen"));
+        var partial = Package("003 Partial.pmp", (0, "chara/d.mdl", "d"), (0, "chara/e.mdl", "other"));
+        var confirmed = Package("004 Confirmed.pmp", (0, "chara/f.mdl", "f"), (0, "chara/y.mdl", "unseen"));
+        var res = new[] { "a", "b", "c", "d", "e", "f" }.Select(n => TestPmp.Res($"chara/{n}.mdl", n)).ToList();
+
+        var order = PackageMatcher.Match(res, [partial, exact, confirmed, strongMany], new HashSet<string> { "004 Confirmed.pmp" })
+            .Packages.Select(m => m.Package.RelativePath);
+
+        Assert.Equal(["004 Confirmed.pmp", "001 Exact.pmp", "002 Strong.pmp", "003 Partial.pmp"], order);
+    }
+
+    [Fact]
+    public void OrderHoldsForLargeLibraries()
+    {
+        // More than 16 entries: List.Sort is no longer an insertion sort, so a second sort would reorder ties.
+        var packages = Enumerable.Range(1, 40).Select(i => Package($"{i:000}.pmp",
+            Enumerable.Range(0, i % 7 + 1).Select(j => (0, $"chara/p{i}_{j}.mdl", $"c{i}_{j}")).ToArray())).ToList();
+        var res = packages.SelectMany(p => p.Payloads).Select(x => new CharacterResource([x.GamePath],
+            new ContentHash(HashAlgorithmKind.Sha1, x.Sha1!), true, null, ResourceAvailability.Available)).ToList();
+
+        var report = PackageMatcher.Match(res, packages, new HashSet<string> { "040.pmp" });
+
+        Assert.Equal("040.pmp", report.Packages[0].Package.RelativePath);
+        var rest = report.Packages.Skip(1).ToList();
+        Assert.Equal(rest.OrderByDescending(m => m.MatchedPaths.Count).ThenBy(m => m.Package.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .Select(m => m.Package.RelativePath), rest.Select(m => m.Package.RelativePath));
+    }
+
+    [Fact]
     public void UserConfirmationKeepsTheComputedStatus()
     {
         var pkg = Package("001 A.pmp", (0, "chara/a.mdl", "a"), (0, "chara/b.mdl", "b"));
@@ -323,6 +355,19 @@ public class OriginalPackageExportTests
         // Exporting again finds the identical copy and writes nothing new.
         var again = await OriginalPackageExporter.CopyAsync(lib, session, [match], null, null, CancellationToken.None);
         Assert.Equal("AlreadyPresentIdentical", again[0].Outcome);
+    }
+
+    [Fact]
+    public void ALaterExportKeepsTheRecordOfEarlierCopies()
+    {
+        using var dir = new TempDir();
+        var first = new OriginalPackagesManifest { Packages = [new OriginalPackageCopy { LibraryRelativePath = "1 A.pmp", ExportedFile = "Original packages/1 A.pmp" }] };
+        first.Write(dir.Path);
+
+        var merged = OriginalPackagesManifest.KeepEarlier(dir.Path,
+            [new OriginalPackageCopy { LibraryRelativePath = "2 B.pmp", ExportedFile = "Original packages/2 B.pmp" }]);
+
+        Assert.Equal(["2 B.pmp", "1 A.pmp"], merged.Select(c => c.LibraryRelativePath));
     }
 
     [Fact]

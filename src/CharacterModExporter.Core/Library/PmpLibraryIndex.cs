@@ -71,7 +71,8 @@ public static class PmpLibraryIndexer
         }
 
         progress?.Report(new IndexProgress(files.Count, files.Count, null));
-        var removed = reusable.Keys.Count(k => !index.Packages.Exists(p => string.Equals(p.RelativePath, k, StringComparison.OrdinalIgnoreCase)));
+        var present = index.Packages.Select(p => p.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removed = reusable.Keys.Count(k => !present.Contains(k));
         return new IndexResult(index, read, reused, removed, problems);
     }
 

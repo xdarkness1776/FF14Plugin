@@ -245,11 +245,11 @@ public static class PackageMatcher
             report.Packages.Add(match);
         }
 
-        report.Packages.Sort((a, b) => a.Status != b.Status ? a.Status.CompareTo(b.Status)
+        // One sort (List.Sort is not stable): user-confirmed first, then by status, most matched files, path.
+        static int Rank(MatchStatus s) => s == MatchStatus.UserConfirmed ? -1 : (int)s;
+        report.Packages.Sort((a, b) => Rank(a.Status) != Rank(b.Status) ? Rank(a.Status).CompareTo(Rank(b.Status))
             : b.MatchedPaths.Count != a.MatchedPaths.Count ? b.MatchedPaths.Count.CompareTo(a.MatchedPaths.Count)
             : string.Compare(a.Package.RelativePath, b.Package.RelativePath, StringComparison.OrdinalIgnoreCase));
-        // User-confirmed packages first.
-        report.Packages.Sort((a, b) => (b.Status == MatchStatus.UserConfirmed).CompareTo(a.Status == MatchStatus.UserConfirmed));
 
         foreach (var r in resources)
         {

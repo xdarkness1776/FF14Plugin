@@ -323,6 +323,8 @@ public sealed class ExportWindow : Window, IDisposable
     private static readonly MatchStatus[] PackageStatuses =
         [MatchStatus.UserConfirmed, MatchStatus.Exact, MatchStatus.Strong, MatchStatus.Partial, MatchStatus.Ambiguous];
 
+    private static readonly string[] StatusFilterNames = ["All statuses", .. PackageStatuses.Select(Describe)];
+
     private void DrawOriginals()
     {
         var s = _session;
@@ -396,8 +398,7 @@ public sealed class ExportWindow : Window, IDisposable
         ImGui.InputTextWithHint("##pkgfilter", "Search name, number or category", ref _packageFilter, 256);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(160);
-        var names = new[] { "All statuses" }.Concat(PackageStatuses.Select(Describe)).ToArray();
-        ImGui.Combo("##status", ref _statusFilter, names, names.Length);
+        ImGui.Combo("##status", ref _statusFilter, StatusFilterNames, StatusFilterNames.Length);
         ImGui.SameLine();
         if (ImGui.Button("Select Exact and Confirmed"))
         {

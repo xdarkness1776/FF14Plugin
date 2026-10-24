@@ -47,7 +47,7 @@ area (for example a town), with no direct pair between them. Record pass/fail an
 
 ## Automated tests (run in the development environment)
 
-Last run for 0.4.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 165 passed, 0 failed;
+Last run for 0.4.0.0 on 2026-10-24 with `dotnet test` (Release): `CharacterModExporter.Tests` 168 passed, 0 failed (0.4.1.0);
 `CharacterModExporter.PenumbraCompatTests` 2 passed, 0 failed. The patched PlayerSync (`playersync-fork/apply.sh`,
 upstream b2f8ce8) built successfully with the 0.4 contracts. These cover the resolver, the package reader for every
 group type, the index cache, matching statuses, original export (verification, conflicts, changed packages,

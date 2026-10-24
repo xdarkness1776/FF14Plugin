@@ -74,15 +74,30 @@ public sealed class PackageOverrideStore
 
     public static string CharacterKey(string name, string? world) => string.IsNullOrEmpty(world) ? name : $"{name}@{world}";
 
+    // The window asks for categories every frame and exports read them on a background thread.
+    private readonly object _lock = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PackageCategory> _detected = new(StringComparer.OrdinalIgnoreCase);
+
     public (string Category, bool FromUser, string Evidence) CategoryOf(PmpPackage package)
     {
-        if (Packages.TryGetValue(package.Sha256, out var o) && !string.IsNullOrWhiteSpace(o.Category))
-            return (o.Category!, true, "Set by you.");
-        var c = PackageCategorizer.Categorize(package);
+        lock (_lock)
+        {
+            if (Packages.TryGetValue(package.Sha256, out var o) && !string.IsNullOrWhiteSpace(o.Category))
+                return (o.Category!, true, "Set by you.");
+        }
+
+        // A package's SHA-256 fixes its content, so its detected category never changes.
+        var c = _detected.GetOrAdd(package.Sha256, _ => PackageCategorizer.Categorize(package));
         return (c.Category, false, c.Evidence);
     }
 
     public void SetCategory(PmpPackage package, string? category)
+    {
+        lock (_lock)
+            SetCategoryCore(package, category);
+    }
+
+    private void SetCategoryCore(PmpPackage package, string? category)
     {
         if (!Packages.TryGetValue(package.Sha256, out var o)) Packages[package.Sha256] = o = new PackageOverride();
         o.Category = string.IsNullOrWhiteSpace(category) ? null : category.Trim();
@@ -92,11 +107,20 @@ public sealed class PackageOverrideStore
 
     public IReadOnlySet<string> ConfirmedPaths(string characterKey, IEnumerable<PmpPackage> packages)
     {
-        if (!Confirmed.TryGetValue(characterKey, out var hashes)) return new HashSet<string>();
-        return packages.Where(p => hashes.Contains(p.Sha256)).Select(p => p.RelativePath).ToHashSet(StringComparer.Ordinal);
+        lock (_lock)
+        {
+            if (!Confirmed.TryGetValue(characterKey, out var hashes)) return new HashSet<string>();
+            return packages.Where(p => hashes.Contains(p.Sha256)).Select(p => p.RelativePath).ToHashSet(StringComparer.Ordinal);
+        }
     }
 
     public void SetConfirmed(string characterKey, PmpPackage package, bool confirmed)
+    {
+        lock (_lock)
+            SetConfirmedCore(characterKey, package, confirmed);
+    }
+
+    private void SetConfirmedCore(string characterKey, PmpPackage package, bool confirmed)
     {
         if (!Confirmed.TryGetValue(characterKey, out var set)) Confirmed[characterKey] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (confirmed) set.Add(package.Sha256);
@@ -132,8 +156,12 @@ public sealed class PackageOverrideStore
         }
 
         var temp = path + ".tmp";
-        using (var s = File.Create(temp))
+        lock (_lock)
+        {
+            using var s = File.Create(temp);
             JsonSerializer.Serialize(s, this, new JsonSerializerOptions { WriteIndented = true });
+        }
+
         File.Move(temp, path, overwrite: true);
     }
 }

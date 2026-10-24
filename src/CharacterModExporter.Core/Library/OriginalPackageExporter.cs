@@ -22,6 +22,11 @@ public sealed class OriginalPackageCopy
     /// <summary>SHA-256 of the written copy; equal to <see cref="IndexedSha256"/> whenever a copy was kept.</summary>
     public string? CopySha256 { get; set; }
 
+    public DateTimeOffset ExportedAtUtc { get; set; }
+
+    /// <summary>"Live" or "MCDF snapshot": what the match was based on when this package was exported.</summary>
+    public string? Evidence { get; set; }
+
     public string MatchStatus { get; set; } = string.Empty;
     public string? ComputedMatchStatus { get; set; }
     public string? Category { get; set; }

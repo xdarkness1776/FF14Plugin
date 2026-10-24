@@ -56,6 +56,37 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
         _resolved = GameObjectResourcePathResolved.Subscriber(pi, OnResolved);
         _jobs = new ExportJobRegistry(Resolve, () => _forbiddenRoots().Append(CacheFolder()).Append(ModDirectory()),
             log: (ex, msg) => _log.Warning(ex, msg));
+        _framework.Update += OnFrameworkUpdate;
+    }
+
+    private DateTime _nextCheckUtc;
+
+    /// <summary>
+    /// Once a second, checks that every watched character still lives at the address its Penumbra events are matched by.
+    /// When it despawned or moved, another object can take the address, and its files must never be recorded for it.
+    /// </summary>
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        var now = DateTime.UtcNow;
+        if (now < _nextCheckUtc || _watched.IsEmpty) return;
+        _nextCheckUtc = now.AddSeconds(1);
+        foreach (var (entityId, watched) in _watched)
+        {
+            var current = _objects.SearchByEntityId(entityId) as IPlayerCharacter;
+            if (current != null ? current.Address == watched.Address : watched.Address == nint.Zero) continue;
+            _byAddress.TryRemove(new KeyValuePair<nint, Watched>(watched.Address, watched));
+            watched.Tracker.Reset();
+            if (current == null)
+            {
+                watched.Address = nint.Zero;
+                continue;
+            }
+
+            // Respawned at another address: follow it; the game loads its files again and they are recorded afresh.
+            watched.Address = current.Address;
+            watched.Name = current.Name.TextValue;
+            _byAddress[current.Address] = watched;
+        }
     }
 
     public string SourceLabel => "Official PlayerSync, files read through Penumbra";
@@ -180,6 +211,7 @@ public sealed class PenumbraExportSource : IPlayerSyncExportApi, IDisposable
 
     public void Dispose()
     {
+        _framework.Update -= OnFrameworkUpdate;
         _resolved.Dispose();
         _jobs.Dispose();
     }

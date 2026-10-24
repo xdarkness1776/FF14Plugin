@@ -2,6 +2,14 @@ Character Mod Exporter: an add-on for PlayerSync. Right-click a character Player
 or pair) and export the files PlayerSync applied to them into a folder you choose, with a manifest, a report and,
 when complete, a Penumbra package for manual import.
 
+0.4.1.0: fixes. The Penumbra source now notices when a watched character despawns or respawns at another address, so
+files of an object that takes over its old address are never recorded for it. Matching always reads the character
+again first instead of reusing an older list, and the package list keeps its order (confirmed, then status, then most
+matched files) in large libraries. Exporting more originals into the same folder keeps the earlier entries in
+`OriginalPackages.json`; each entry now says when it was exported and from what evidence. Unnamed Combining
+containers are labelled by their position. The progress bar counts copied packages, category detection is cached,
+and your package choices are safe to change while an export runs.
+
 0.4.0.0: original packages. Choose the folder with your own (numbered) `.pmp` files in Settings and index it. The
 export window's **Original Packages** view then shows which of those packages the character's files come from, with
 an explicit status (Exact, Strong, Partial, Ambiguous; files in no package or not comparable are listed too), the
